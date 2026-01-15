@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# FFmpeg files should be committed (needed for Vercel deployment)
+!public/ffmpeg/

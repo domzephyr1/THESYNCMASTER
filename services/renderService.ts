@@ -19,7 +19,7 @@ export class RenderService {
         // Note: We'll proceed, but it will likely fail on `load` or execution if multi-threaded core is fetched.
     }
 
-    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+    const baseURL = '/ffmpeg';
     
     try {
         await this.ffmpeg.load({
