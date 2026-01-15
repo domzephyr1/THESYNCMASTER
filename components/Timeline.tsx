@@ -1,0 +1,142 @@
+import React, { useEffect, useRef } from 'react';
+import { BeatMarker } from '../types';
+
+interface TimelineProps {
+  waveformData: number[];
+  beats: BeatMarker[];
+  duration: number;
+  currentTime: number;
+  className?: string;
+  onSeek?: (time: number) => void;
+  onBeatToggle?: (time: number) => void;
+}
+
+const Timeline: React.FC<TimelineProps> = ({ 
+  waveformData, 
+  beats, 
+  duration, 
+  currentTime, 
+  className = "",
+  onSeek,
+  onBeatToggle
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Clear
+    ctx.clearRect(0, 0, width, height);
+
+    // Draw Background Grid
+    ctx.fillStyle = '#0f172a'; // Slate 900
+    ctx.fillRect(0, 0, width, height);
+    
+    ctx.strokeStyle = '#1e293b'; // Slate 800
+    ctx.beginPath();
+    ctx.moveTo(0, height / 2);
+    ctx.lineTo(width, height / 2);
+    ctx.stroke();
+
+    // Draw Waveform
+    if (waveformData.length > 0) {
+      ctx.beginPath();
+      const barWidth = width / waveformData.length;
+      const centerY = height / 2;
+
+      ctx.fillStyle = '#06b6d4'; // Cyan 500
+      
+      waveformData.forEach((val, index) => {
+        const x = index * barWidth;
+        const barHeight = val * (height * 0.8); // 80% height max
+        
+        // Mirrored bars
+        ctx.fillRect(x, centerY - barHeight / 2, barWidth - 1, barHeight);
+      });
+    }
+
+    // Draw Beats
+    ctx.fillStyle = 'rgba(234, 179, 8, 0.6)'; // Yellow 500 transparent
+    ctx.strokeStyle = '#eab308'; // Yellow 500 solid
+    
+    beats.forEach(beat => {
+      const x = (beat.time / duration) * width;
+      // Draw Line
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      
+      // Draw Marker Head
+      ctx.beginPath();
+      ctx.arc(x, 10, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+  }, [waveformData, beats, duration]);
+
+  // Handle Playhead separation to keep animation smooth
+  // We overlay a div for the playhead instead of redrawing canvas every frame
+  
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percentage = x / rect.width;
+    const time = percentage * duration;
+
+    // Shift + Click to Toggle Beat
+    if (e.shiftKey && onBeatToggle) {
+        onBeatToggle(time);
+        return;
+    }
+
+    // Normal Click to Seek
+    if (onSeek) {
+        onSeek(time);
+    }
+  };
+
+  const playheadPos = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <div className="space-y-1">
+      <div 
+        ref={containerRef}
+        className={`relative h-24 w-full bg-slate-900 rounded-lg overflow-hidden border border-slate-700 cursor-pointer group ${className}`}
+        onClick={handleClick}
+        title="Click to Seek. Shift+Click to Add/Remove Beat."
+      >
+        <canvas 
+          ref={canvasRef} 
+          width={1000} 
+          height={150} 
+          className="w-full h-full block"
+        />
+        
+        {/* Playhead */}
+        <div 
+          className="absolute top-0 bottom-0 w-0.5 bg-white z-10 shadow-[0_0_10px_rgba(255,255,255,0.8)] pointer-events-none transition-all duration-75 ease-linear"
+          style={{ left: `${playheadPos}%` }}
+        >
+          <div className="absolute -top-1 -left-1.5 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-white"></div>
+        </div>
+      </div>
+      <div className="flex justify-between px-1 text-[10px] text-slate-500 font-mono">
+         <span>0:00</span>
+         <span className="text-slate-600">SHIFT + CLICK to Edit Beats</span>
+         <span>END</span>
+      </div>
+    </div>
+  );
+};
+
+export default Timeline;

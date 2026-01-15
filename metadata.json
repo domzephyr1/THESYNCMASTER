@@ -1,0 +1,5 @@
+{
+  "name": "Copy of SyncMaster",
+  "description": "A Cyber-Tech themed video montage creator that automatically syncs video clips to the rhythm of uploaded music using Web Audio API analysis.",
+  "requestFramePermissions": []
+}
