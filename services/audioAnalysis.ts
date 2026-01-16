@@ -103,8 +103,11 @@ export class AudioAnalyzerService {
   }
 
   async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {
+    console.log("🎵 detectBeats called", { duration: buffer.duration, minEnergy, sensitivity });
+
     // 1. Try Essentia AI Detection First (Lazy Load)
     if (!this.essentia) {
+        console.log("Initializing Essentia...");
         await this.initEssentia();
     }
 
@@ -112,13 +115,13 @@ export class AudioAnalyzerService {
         try {
             console.log("Running Essentia RhythmExtractor2013...");
             const channelData = buffer.getChannelData(0);
-            
+
             // Convert to vector for Essentia
             const vectorSignal = this.essentia.arrayToVector(channelData);
-            
+
             // Use RhythmExtractor2013 (Standard for music analysis)
             const rhythm = this.essentia.RhythmExtractor2013(vectorSignal);
-            
+
             // Output: ticks (beat positions in seconds), bpm, confidence
             const ticks = this.essentia.vectorToArray(rhythm.ticks);
             const confidence = rhythm.confidence;
@@ -127,25 +130,34 @@ export class AudioAnalyzerService {
             if(vectorSignal.delete) vectorSignal.delete();
 
             if (ticks.length > 0) {
-                console.log(`Essentia found ${ticks.length} beats with ${confidence} confidence.`);
+                console.log(`✅ Essentia found ${ticks.length} beats with ${confidence} confidence.`);
                 return ticks.map((time: number) => ({
                     time,
-                    intensity: 0.8 
+                    intensity: 0.8
                 }));
+            } else {
+                console.warn("Essentia returned 0 beats, falling back");
             }
         } catch (e) {
             console.warn("Essentia analysis failed, falling back to Multi-Band", e);
         }
+    } else {
+        console.log("Essentia not available, using Multi-Band fallback");
     }
 
     // 2. Fallback to Multi-Band Algo
-    console.log("Using Multi-Band Frequency Analysis");
+    console.log("🔊 Using Multi-Band Frequency Analysis");
     const lowPeaks = await this.analyzeBand(buffer, 'lowpass', 250, 1.2, minEnergy, sensitivity);
     const midPeaks = await this.analyzeBand(buffer, 'bandpass', 1200, 1.0, minEnergy, sensitivity);
     const highPeaks = await this.analyzeBand(buffer, 'highpass', 4000, 0.8, minEnergy, sensitivity * 1.2);
 
+    console.log(`  Bands: low=${lowPeaks.length}, mid=${midPeaks.length}, high=${highPeaks.length}`);
+
     const allPeaks = [...lowPeaks, ...midPeaks, ...highPeaks].sort((a, b) => a.time - b.time);
-    return this.mergeBeats(allPeaks, 0.15); 
+    const merged = this.mergeBeats(allPeaks, 0.15);
+
+    console.log(`✅ Multi-Band found ${merged.length} beats`);
+    return merged;
   }
 
   private async analyzeBand(

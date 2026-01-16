@@ -190,13 +190,18 @@ function App() {
   };
 
   const handleReSync = async () => {
-    if (!audioBuffer) return;
+    if (!audioBuffer) {
+        console.warn("handleReSync: No audioBuffer available");
+        return;
+    }
+    console.log("🔄 Re-analyzing beats...", { minEnergy, peakSensitivity });
     setIsAnalyzing(true);
     try {
         const detectedBeats = await audioService.detectBeats(audioBuffer, minEnergy, peakSensitivity);
+        console.log(`✅ Detected ${detectedBeats.length} beats`);
         setBeats(detectedBeats);
     } catch(e) {
-        console.error(e);
+        console.error("Beat detection failed:", e);
     } finally {
         setIsAnalyzing(false);
     }
