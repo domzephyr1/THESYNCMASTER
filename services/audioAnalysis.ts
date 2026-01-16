@@ -148,10 +148,15 @@ export class AudioAnalyzerService {
           console.log(`   First 10 beats: ${ticks.slice(0, 10).map((t: number) => t.toFixed(2)).join(', ')}`);
           console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-          essentiaBeats = ticks.map((time: number) => ({
+          // CRITICAL: Convert Float32Array to regular Array before mapping to objects
+          // Float32Array.map() returns Float32Array which can only hold numbers!
+          essentiaBeats = Array.from(ticks).map((time: number) => ({
             time,
             intensity: Math.min(0.9, confidence || 0.8)
           }));
+
+          console.log(`   ✅ Created ${essentiaBeats.length} beat markers`);
+          console.log(`   First beat object: time=${essentiaBeats[0]?.time}, intensity=${essentiaBeats[0]?.intensity}`);
         } else {
           console.warn(`⚠️ Only ${ticks.length} beats detected, falling back to multi-band`);
         }
