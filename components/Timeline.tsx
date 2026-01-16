@@ -39,7 +39,7 @@ const Timeline: React.FC<TimelineProps> = ({
     // Draw Background Grid
     ctx.fillStyle = '#0f172a'; // Slate 900
     ctx.fillRect(0, 0, width, height);
-    
+
     ctx.strokeStyle = '#1e293b'; // Slate 800
     ctx.beginPath();
     ctx.moveTo(0, height / 2);
@@ -53,33 +53,40 @@ const Timeline: React.FC<TimelineProps> = ({
       const centerY = height / 2;
 
       ctx.fillStyle = '#06b6d4'; // Cyan 500
-      
+
       waveformData.forEach((val, index) => {
         const x = index * barWidth;
         const barHeight = val * (height * 0.8); // 80% height max
-        
+
         // Mirrored bars
         ctx.fillRect(x, centerY - barHeight / 2, barWidth - 1, barHeight);
       });
     }
 
-    // Draw Beats
-    ctx.fillStyle = 'rgba(234, 179, 8, 0.6)'; // Yellow 500 transparent
-    ctx.strokeStyle = '#eab308'; // Yellow 500 solid
-    
-    beats.forEach(beat => {
-      const x = (beat.time / duration) * width;
-      // Draw Line
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, height);
-      ctx.stroke();
-      
-      // Draw Marker Head
-      ctx.beginPath();
-      ctx.arc(x, 10, 3, 0, Math.PI * 2);
-      ctx.fill();
-    });
+    // Draw Beats - only if duration is valid
+    if (duration > 0 && beats.length > 0) {
+      console.log(`📊 Timeline drawing ${beats.length} beats over ${duration}s`);
+
+      ctx.fillStyle = 'rgba(234, 179, 8, 0.6)'; // Yellow 500 transparent
+      ctx.strokeStyle = '#eab308'; // Yellow 500 solid
+      ctx.lineWidth = 2;
+
+      beats.forEach(beat => {
+        const x = (beat.time / duration) * width;
+        if (x >= 0 && x <= width) {
+          // Draw Line
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, height);
+          ctx.stroke();
+
+          // Draw Marker Head
+          ctx.beginPath();
+          ctx.arc(x, 10, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+    }
 
   }, [waveformData, beats, duration]);
 
