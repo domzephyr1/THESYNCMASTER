@@ -82,7 +82,7 @@ const VideoTrimmer: React.FC<VideoTrimmerProps> = ({ clip, onSave, onClose }) =>
     const rect = trackRef.current.getBoundingClientRect();
     const offsetX = e.clientX - rect.left;
     const percent = Math.max(0, Math.min(1, offsetX / rect.width));
-    const time = percent * clip.duration;
+    const time = percent * (clip.duration > 0 ? clip.duration : 1);
 
     // Use refs for current values to avoid stale closure
     const currentStart = startRef.current;
@@ -119,8 +119,9 @@ const VideoTrimmer: React.FC<VideoTrimmerProps> = ({ clip, onSave, onClose }) =>
     onClose();
   };
 
-  const leftPercent = (start / clip.duration) * 100;
-  const widthPercent = ((end - start) / clip.duration) * 100;
+  const safeDuration = clip.duration > 0 ? clip.duration : 1;
+  const leftPercent = (start / safeDuration) * 100;
+  const widthPercent = ((end - start) / safeDuration) * 100;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
@@ -203,9 +204,9 @@ const VideoTrimmer: React.FC<VideoTrimmerProps> = ({ clip, onSave, onClose }) =>
             </div>
             
             {/* Playhead Marker */}
-            <div 
+            <div
               className="absolute top-0 bottom-0 w-0.5 bg-yellow-500 pointer-events-none z-0"
-              style={{ left: `${(currentTime / clip.duration) * 100}%` }}
+              style={{ left: `${(currentTime / safeDuration) * 100}%` }}
             />
           </div>
 

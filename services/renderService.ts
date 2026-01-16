@@ -14,9 +14,8 @@ export class RenderService {
     // Check for SharedArrayBuffer support (Required for FFmpeg.wasm multi-threaded)
     if (!crossOriginIsolated) {
         console.warn("SharedArrayBuffer is not available. Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers are missing.");
-        // We could try to load a single-threaded version if available, but for now we throw to alert the UI.
-        // throw new Error("Browser headers missing for FFmpeg."); 
-        // Note: We'll proceed, but it will likely fail on `load` or execution if multi-threaded core is fetched.
+        console.warn("This will cause FFmpeg to fall back to single-threaded mode, which may be slower.");
+        // Continue anyway - FFmpeg.wasm will attempt single-threaded mode
     }
 
     const baseURL = '/ffmpeg';
@@ -27,9 +26,13 @@ export class RenderService {
             wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
         });
         this.loaded = true;
+        console.log("✅ FFmpeg loaded successfully");
     } catch (e) {
         console.error("Failed to load FFmpeg", e);
-        throw new Error("FFmpeg failed to initialize. This usually means the server is missing COOP/COEP headers.");
+        const errorMessage = crossOriginIsolated
+            ? "FFmpeg failed to initialize. Check if FFmpeg files are available at /ffmpeg/"
+            : "FFmpeg failed to initialize. Missing COOP/COEP headers. Try using 'Quick Record' option instead.";
+        throw new Error(errorMessage);
     }
   }
 
@@ -104,6 +107,19 @@ export class RenderService {
 
     // 4. Read Output
     const data = await ffmpeg.readFile('output.mp4');
+
+    // 5. Cleanup - Delete all files from virtual FS to free memory
+    try {
+      await ffmpeg.deleteFile('audio.mp3');
+      await ffmpeg.deleteFile('output.mp4');
+      for (const i of usedIndices) {
+        await ffmpeg.deleteFile(`clip${i}.mp4`);
+      }
+      console.log("✅ FFmpeg cleanup complete");
+    } catch (cleanupErr) {
+      console.warn("FFmpeg cleanup warning:", cleanupErr);
+    }
+
     return new Blob([data], { type: 'video/mp4' });
   }
 }

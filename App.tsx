@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AppStep, BeatMarker, VideoClip, EnhancedSyncSegment } from './types';
 import { audioService } from './services/audioAnalysis';
 import { videoAnalysisService } from './services/videoAnalysis';
@@ -9,7 +9,7 @@ import Timeline from './components/Timeline';
 import Player from './components/Player';
 import ClipManager from './components/ClipManager';
 import VideoTrimmer from './components/VideoTrimmer';
-import { Zap, Download, Activity, Music as MusicIcon, Film, AlertCircle, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers } from 'lucide-react';
+import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers } from 'lucide-react';
 
 // Helpers
 const formatTime = (time: number) => {
@@ -53,14 +53,28 @@ function App() {
   // Modals
   const [showExportModal, setShowExportModal] = useState(false);
   const [trimmingClip, setTrimmingClip] = useState<VideoClip | null>(null);
-  const [apiKey, setApiKey] = useState('');
+
+  // Track Object URLs for cleanup to prevent memory leaks
+  const urlsToRevoke = useRef<string[]>([]);
+
+  // Cleanup URLs on unmount
+  useEffect(() => {
+    return () => {
+      urlsToRevoke.current.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, []);
 
   // --- Handlers ---
   const handleAudioUpload = (files: FileList | null) => {
     if (files && files[0]) {
+      // Revoke old audio URL if exists
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
       const file = files[0];
       setAudioFile(file);
       const url = URL.createObjectURL(file);
+      urlsToRevoke.current.push(url);
       setAudioUrl(url);
     }
   };
@@ -69,6 +83,7 @@ function App() {
     if (files) {
       const newClips: VideoClip[] = Array.from(files).map(file => {
         const url = URL.createObjectURL(file);
+        urlsToRevoke.current.push(url); // Track for cleanup
         const clipId = Math.random().toString(36).substr(2, 9);
 
         // Metadata load for duration
@@ -537,12 +552,18 @@ function App() {
             </div>
 
             <div className={`flex justify-between items-center pt-8 border-t border-slate-800 mt-8 transition-opacity ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-              <button 
+              <button
                 onClick={() => {
                    setIsPlaying(false);
                    setStep(AppStep.UPLOAD);
                    setAudioFile(null);
                    setVideoFiles([]);
+                   // Clean up all Object URLs to free memory
+                   urlsToRevoke.current.forEach(url => URL.revokeObjectURL(url));
+                   urlsToRevoke.current = [];
+                   setAudioUrl('');
+                   setBeats([]);
+                   setSegments([]);
                 }}
                 className="flex items-center text-sm text-slate-500 hover:text-white transition-colors"
               >

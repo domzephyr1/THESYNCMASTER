@@ -23,27 +23,15 @@ const Timeline: React.FC<TimelineProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Debug: Log props on every render
-  console.log(`🎯 Timeline RENDER: beats=${beats.length}, duration=${duration}, waveform=${waveformData.length}`);
-
   useEffect(() => {
-    console.log(`🎯 Timeline useEffect TRIGGERED: beats=${beats.length}, duration=${duration}`);
-
     const canvas = canvasRef.current;
-    if (!canvas) {
-      console.warn("🎯 Timeline: canvas ref is null!");
-      return;
-    }
+    if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      console.warn("🎯 Timeline: canvas context is null!");
-      return;
-    }
+    if (!ctx) return;
 
     const width = canvas.width;
     const height = canvas.height;
-    console.log(`🎯 Timeline canvas size: ${width}x${height}`);
 
     // Clear
     ctx.clearRect(0, 0, width, height);
@@ -76,11 +64,8 @@ const Timeline: React.FC<TimelineProps> = ({
     }
 
     // Draw Beats - ALWAYS ON TOP with high visibility
-    console.log(`🎯 Timeline beat check: duration=${duration}, beats.length=${beats.length}`);
-
     if (beats.length > 0) {
       const effectiveDuration = duration > 0 ? duration : 1;
-      console.log(`📊 Timeline DRAWING ${beats.length} beats over ${effectiveDuration}s`);
 
       // Draw beat markers with GLOW effect for visibility
       ctx.save();
@@ -90,8 +75,7 @@ const Timeline: React.FC<TimelineProps> = ({
       ctx.strokeStyle = '#fbbf24'; // Amber 400 - very bright
       ctx.lineWidth = 2;
 
-      let drawnCount = 0;
-      beats.forEach((beat, idx) => {
+      beats.forEach((beat) => {
         const x = Math.round((beat.time / effectiveDuration) * width);
         if (x >= 0 && x <= width) {
           // Draw vertical line
@@ -99,12 +83,6 @@ const Timeline: React.FC<TimelineProps> = ({
           ctx.moveTo(x, 0);
           ctx.lineTo(x, height);
           ctx.stroke();
-          drawnCount++;
-        }
-
-        // Log first 3 beats
-        if (idx < 3) {
-          console.log(`  Beat ${idx}: time=${beat.time?.toFixed(2)}s, x=${x}px`);
         }
       });
 
@@ -122,9 +100,6 @@ const Timeline: React.FC<TimelineProps> = ({
       });
 
       ctx.restore();
-      console.log(`📊 Timeline: Drew ${drawnCount}/${beats.length} beat markers`);
-    } else {
-      console.warn("🎯 Timeline: No beats to draw!");
     }
 
   }, [waveformData, beats, duration]);

@@ -11,18 +11,7 @@ export class SegmentationService {
     duration: number
   ): { segments: EnhancedSyncSegment[], bpm: number } {
 
-    console.log('🎬 generateMontage called with:', {
-      beatsCount: beats.length,
-      clipsCount: videoClips.length,
-      duration,
-      clips: videoClips.map((c, i) => ({
-        index: i,
-        name: c.name,
-        trimStart: c.trimStart,
-        trimEnd: c.trimEnd,
-        validDuration: c.trimEnd - c.trimStart
-      }))
-    });
+    console.log(`🎬 generateMontage: ${beats.length} beats, ${videoClips.length} clips, ${duration.toFixed(1)}s`);
 
     if (!beats.length || !videoClips.length || duration === 0) {
       console.warn('⚠️ generateMontage returning empty - missing data');
@@ -35,12 +24,12 @@ export class SegmentationService {
       const validDuration = clip.trimEnd - clip.trimStart;
       if (validDuration > 0.1) { // At least 0.1s of usable content
         validClipIndices.push(index);
-      } else {
-        console.warn(`⚠️ Clip ${index} (${clip.name}) has invalid duration: ${validDuration}s`);
       }
     });
 
-    console.log('✅ Valid clips:', validClipIndices.length, 'of', videoClips.length);
+    if (validClipIndices.length < videoClips.length) {
+      console.warn(`⚠️ ${videoClips.length - validClipIndices.length} clips have invalid duration`);
+    }
 
     if (validClipIndices.length === 0) {
       console.error('❌ No valid clips available! All clips have trimEnd <= trimStart');
@@ -69,7 +58,6 @@ export class SegmentationService {
     const estimatedSegments = Math.ceil(duration / minSegmentDuration);
     if (estimatedSegments > MAX_SEGMENTS) {
       minSegmentDuration = duration / MAX_SEGMENTS;
-      console.log(`⚠️ Capping segments: adjusted minSegmentDuration to ${minSegmentDuration.toFixed(2)}s for max ${MAX_SEGMENTS} segments`);
     }
 
     const newSegments: EnhancedSyncSegment[] = [];
@@ -189,11 +177,6 @@ export class SegmentationService {
       // Sort by score and pick from top candidates with some randomness
       clipScores.sort((a, b) => b.score - a.score);
 
-      // Log scores for debugging
-      if (k < 5) { // Only log first 5 segments to avoid spam
-        console.log(`📊 Segment ${k} clip scores:`, clipScores.map(c => `clip${c.index}=${c.score}`).join(', '));
-      }
-
       // Pick from top 3 candidates randomly (weighted toward better scores)
       const topN = Math.min(3, clipScores.length);
       const weights = clipScores.slice(0, topN).map((c, idx) => Math.max(1, c.score) * (topN - idx));
@@ -207,10 +190,6 @@ export class SegmentationService {
           videoIndex = clipScores[i].index;
           break;
         }
-      }
-
-      if (k < 5) {
-        console.log(`🎯 Segment ${k}: Selected clip ${videoIndex} (${videoClips[videoIndex]?.name})`);
       }
 
       // Update usage tracking
@@ -265,16 +244,8 @@ export class SegmentationService {
     }
 
     // Log final summary
-    const usedClipCounts: Record<number, number> = {};
-    newSegments.forEach(s => {
-      usedClipCounts[s.videoIndex] = (usedClipCounts[s.videoIndex] || 0) + 1;
-    });
-    console.log('🎬 Montage generation complete:', {
-      totalSegments: newSegments.length,
-      uniqueClipsUsed: Object.keys(usedClipCounts).length,
-      clipUsage: usedClipCounts,
-      bpm: estimatedBpm
-    });
+    const uniqueClips = new Set(newSegments.map(s => s.videoIndex)).size;
+    console.log(`✅ Montage: ${newSegments.length} segments, ${uniqueClips} clips used, ${estimatedBpm} BPM`);
 
     return { segments: newSegments, bpm: estimatedBpm };
   }
