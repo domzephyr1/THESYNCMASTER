@@ -9,7 +9,6 @@ export class AudioAnalyzerService {
 
   constructor() {
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    // Removed automatic init to lazy load on first use
   }
 
   // Calculate energy envelope for the entire track (for speed ramping)
@@ -49,8 +48,7 @@ export class AudioAnalyzerService {
   }
 
   private async initEssentia() {
-    // Wait for scripts to load
-    const maxRetries = 20;
+    const maxRetries = 10; // Reduced from 20 for faster fallback
     let attempts = 0;
 
     return new Promise<void>((resolve) => {
@@ -60,17 +58,17 @@ export class AudioAnalyzerService {
                     // EssentiaWASM is a function that returns a promise
                     const wasmModule = await EssentiaWASM();
                     this.essentia = new Essentia(wasmModule);
-                    console.log("✅ Essentia.js (Spotify AI) Initialized");
+                    console.log("✅ Essentia.js initialized");
                     resolve();
                 } catch (e) {
-                    console.warn("Essentia init error", e);
+                    console.warn("⚠️ Essentia init error:", e);
                     resolve(); // Resolve anyway to fallback
                 }
             } else if (attempts < maxRetries) {
                 attempts++;
                 setTimeout(check, 100);
             } else {
-                console.warn("Essentia timed out");
+                console.warn("⚠️ Essentia timeout - using fallback detection");
                 resolve();
             }
         };
@@ -96,7 +94,7 @@ export class AudioAnalyzerService {
       }
       waveform.push(sum / blockSize);
     }
-    
+
     // Normalize
     const max = Math.max(...waveform);
     return waveform.map(val => val / max);
@@ -105,48 +103,53 @@ export class AudioAnalyzerService {
   async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {
     console.log("🎵 detectBeats called", { duration: buffer.duration, minEnergy, sensitivity });
 
-    // 1. Try Essentia AI Detection First (Lazy Load)
-    if (!this.essentia) {
-        console.log("Initializing Essentia...");
-        await this.initEssentia();
-    }
+    // 1. Try Essentia AI Detection First (with timeout)
+    let essentiaBeats: BeatMarker[] | null = null;
 
-    if (this.essentia) {
-        try {
-            console.log("Running Essentia RhythmExtractor2013...");
-            const channelData = buffer.getChannelData(0);
+    try {
+      if (!this.essentia) {
+        // Quick timeout: 1 second max using Promise.race
+        await Promise.race([
+          this.initEssentia(),
+          new Promise(resolve => setTimeout(resolve, 1000))
+        ]);
+      }
 
-            // Convert to vector for Essentia
-            const vectorSignal = this.essentia.arrayToVector(channelData);
+      if (this.essentia) {
+        console.log("🎵 Running Essentia RhythmExtractor2013...");
+        const channelData = buffer.getChannelData(0);
 
-            // Use RhythmExtractor2013 (Standard for music analysis)
-            const rhythm = this.essentia.RhythmExtractor2013(vectorSignal);
+        const vectorSignal = this.essentia.arrayToVector(channelData);
+        const rhythm = this.essentia.RhythmExtractor2013(vectorSignal);
 
-            // Output: ticks (beat positions in seconds), bpm, confidence
-            const ticks = this.essentia.vectorToArray(rhythm.ticks);
-            const confidence = rhythm.confidence;
+        const ticks = this.essentia.vectorToArray(rhythm.ticks);
+        const confidence = rhythm.confidence;
 
-            // Cleanup memory (important for WASM)
-            if(vectorSignal.delete) vectorSignal.delete();
+        // Cleanup memory (important for WASM)
+        if(vectorSignal.delete) vectorSignal.delete();
 
-            if (ticks.length > 0) {
-                console.log(`✅ Essentia found ${ticks.length} beats with ${confidence} confidence.`);
-                return ticks.map((time: number) => ({
-                    time,
-                    intensity: 0.8
-                }));
-            } else {
-                console.warn("Essentia returned 0 beats, falling back");
-            }
-        } catch (e) {
-            console.warn("Essentia analysis failed, falling back to Multi-Band", e);
+        if (ticks.length > 5) { // Need at least 5 beats to be valid
+          console.log(`✅ Essentia: ${ticks.length} beats (${confidence.toFixed(2)} confidence)`);
+          essentiaBeats = ticks.map((time: number) => ({
+            time,
+            intensity: 0.8
+          }));
+        } else {
+          console.warn(`⚠️ Essentia found only ${ticks.length} beats, using fallback`);
         }
-    } else {
-        console.log("Essentia not available, using Multi-Band fallback");
+      }
+    } catch (e) {
+      console.warn("⚠️ Essentia failed:", e);
     }
 
-    // 2. Fallback to Multi-Band Algo
-    console.log("🔊 Using Multi-Band Frequency Analysis");
+    // Return Essentia beats if we got them
+    if (essentiaBeats && essentiaBeats.length > 0) {
+      return essentiaBeats;
+    }
+
+    // 2. Fallback to Multi-Band Detection
+    console.log("🎛️ Using Multi-Band Frequency Analysis (Fallback)");
+
     const lowPeaks = await this.analyzeBand(buffer, 'lowpass', 250, 1.2, minEnergy, sensitivity);
     const midPeaks = await this.analyzeBand(buffer, 'bandpass', 1200, 1.0, minEnergy, sensitivity);
     const highPeaks = await this.analyzeBand(buffer, 'highpass', 4000, 0.8, minEnergy, sensitivity * 1.2);
@@ -156,22 +159,22 @@ export class AudioAnalyzerService {
     const allPeaks = [...lowPeaks, ...midPeaks, ...highPeaks].sort((a, b) => a.time - b.time);
     const merged = this.mergeBeats(allPeaks, 0.15);
 
-    console.log(`✅ Multi-Band found ${merged.length} beats`);
+    console.log(`✅ Multi-band detected ${merged.length} beats`);
     return merged;
   }
 
   private async analyzeBand(
-    buffer: AudioBuffer, 
-    type: BiquadFilterType, 
-    freq: number, 
-    weight: number, 
-    minEnergy: number, 
+    buffer: AudioBuffer,
+    type: BiquadFilterType,
+    freq: number,
+    weight: number,
+    minEnergy: number,
     sensitivity: number
   ): Promise<BeatMarker[]> {
       const offlineCtx = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
       const source = offlineCtx.createBufferSource();
       source.buffer = buffer;
-      
+
       const filter = offlineCtx.createBiquadFilter();
       filter.type = type;
       filter.frequency.value = freq;
@@ -183,7 +186,7 @@ export class AudioAnalyzerService {
 
       const renderedBuffer = await offlineCtx.startRendering();
       const peaks = this.findPeaks(renderedBuffer, minEnergy, sensitivity);
-      
+
       return peaks.map(p => ({ ...p, intensity: p.intensity * weight }));
   }
 
@@ -191,14 +194,14 @@ export class AudioAnalyzerService {
     const rawData = buffer.getChannelData(0);
     const sampleRate = buffer.sampleRate;
     const beats: BeatMarker[] = [];
-    
-    const windowSize = 0.05; 
+
+    const windowSize = 0.05;
     const samplesPerWindow = Math.floor(sampleRate * windowSize);
-    
-    const historySize = Math.floor(1.0 / windowSize); 
+
+    const historySize = Math.floor(1.0 / windowSize);
     const energyHistory: number[] = new Array(historySize).fill(0);
-    
-    const minBeatInterval = 0.25; 
+
+    const minBeatInterval = 0.25;
     let lastBeatTime = -minBeatInterval;
 
     for (let i = 0; i < rawData.length; i += samplesPerWindow) {
@@ -208,9 +211,9 @@ export class AudioAnalyzerService {
         sum += sample * sample;
       }
       const instantEnergy = Math.sqrt(sum / samplesPerWindow);
-      
+
       const localAverage = energyHistory.reduce((a, b) => a + b, 0) / energyHistory.length;
-      
+
       energyHistory.push(instantEnergy);
       energyHistory.shift();
 
@@ -232,14 +235,14 @@ export class AudioAnalyzerService {
 
   private mergeBeats(beats: BeatMarker[], window: number): BeatMarker[] {
     if (beats.length === 0) return [];
-    
+
     const merged: BeatMarker[] = [];
     let currentGroup: BeatMarker[] = [beats[0]];
-    
+
     for (let i = 1; i < beats.length; i++) {
         const beat = beats[i];
         const prevGroupBeat = currentGroup[0];
-        
+
         if (beat.time - prevGroupBeat.time < window) {
             currentGroup.push(beat);
         } else {
@@ -248,12 +251,12 @@ export class AudioAnalyzerService {
             currentGroup = [beat];
         }
     }
-    
+
     if (currentGroup.length > 0) {
         const best = currentGroup.reduce((p, c) => (p.intensity > c.intensity ? p : c));
         merged.push(best);
     }
-    
+
     return merged;
   }
 }
