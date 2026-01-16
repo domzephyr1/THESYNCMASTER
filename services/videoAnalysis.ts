@@ -85,8 +85,14 @@ export class VideoAnalysisService {
 
           for (const time of samples) {
              video.currentTime = time;
+             // Wait for seek with timeout to prevent hanging
              await new Promise<void>(r => {
+                 const timeout = setTimeout(() => {
+                     video.removeEventListener('seeked', onSeek);
+                     r(); // Resolve anyway after timeout
+                 }, 2000);
                  const onSeek = () => {
+                     clearTimeout(timeout);
                      video.removeEventListener('seeked', onSeek);
                      r();
                  };

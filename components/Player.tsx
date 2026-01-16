@@ -308,7 +308,7 @@ const Player: React.FC<PlayerProps> = ({
              let targetTime = targetSegment.clipStartTime + timeInSegment;
              const sourceDuration = clipData.trimEnd - clipData.trimStart;
              if (targetTime > clipData.trimEnd) {
-                 targetTime = clipData.trimStart + ((targetTime - clipData.trimEnd) % sourceDuration);
+                 targetTime = clipData.trimStart + ((targetTime - clipData.trimStart) % sourceDuration);
              }
              videoEl.currentTime = targetTime;
          }

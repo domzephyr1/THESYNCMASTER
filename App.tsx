@@ -69,21 +69,22 @@ function App() {
     if (files) {
       const newClips: VideoClip[] = Array.from(files).map(file => {
         const url = URL.createObjectURL(file);
-        
+        const clipId = Math.random().toString(36).substr(2, 9);
+
         // Metadata load for duration
         const tempVideo = document.createElement('video');
         tempVideo.src = url;
         tempVideo.onloadedmetadata = () => {
-           setVideoFiles(prev => prev.map(c => 
-             c.url === url ? { ...c, duration: tempVideo.duration, trimEnd: tempVideo.duration } : c
+           setVideoFiles(prev => prev.map(c =>
+             c.id === clipId ? { ...c, duration: tempVideo.duration, trimEnd: tempVideo.duration } : c
            ));
         };
 
         return {
-          id: Math.random().toString(36).substr(2, 9),
+          id: clipId,
           file,
           url,
-          duration: 0, 
+          duration: 0,
           name: file.name,
           trimStart: 0,
           trimEnd: 0
@@ -92,13 +93,19 @@ function App() {
 
       setVideoFiles(prev => [...prev, ...newClips]);
 
-      // Trigger Async AI Analysis
-      newClips.forEach(async (clip) => {
-          const metadata = await videoAnalysisService.analyzeClip(clip.url);
-          setVideoFiles(prev => prev.map(c => 
-              c.id === clip.id ? { ...c, metadata } : c
-          ));
-      });
+      // Trigger Async AI Analysis with proper error handling
+      Promise.all(
+        newClips.map(async (clip) => {
+          try {
+            const metadata = await videoAnalysisService.analyzeClip(clip.url);
+            setVideoFiles(prev => prev.map(c =>
+                c.id === clip.id ? { ...c, metadata } : c
+            ));
+          } catch (e) {
+            console.warn(`Failed to analyze clip ${clip.name}:`, e);
+          }
+        })
+      );
     }
   };
 
@@ -203,7 +210,8 @@ function App() {
         }, 600);
         return () => clearTimeout(timer);
     }
-  }, [minEnergy, peakSensitivity]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minEnergy, peakSensitivity, step]);
 
   // Presets
   const applyPreset = (type: 'gentle' | 'balanced' | 'aggressive') => {

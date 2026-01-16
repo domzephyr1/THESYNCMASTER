@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { VideoClip } from '../types';
 import { X, Check, Play, Pause, Scissors } from 'lucide-react';
 
@@ -27,6 +27,12 @@ const VideoTrimmer: React.FC<VideoTrimmerProps> = ({ clip, onSave, onClose }) =>
   // Dragging state for slider handles
   const trackRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState<'start' | 'end' | null>(null);
+
+  // Use refs to avoid stale closures in event listeners
+  const startRef = useRef(start);
+  const endRef = useRef(end);
+  startRef.current = start;
+  endRef.current = end;
 
   useEffect(() => {
     // Ensure end is valid if passed as 0 or greater than duration
@@ -69,37 +75,44 @@ const VideoTrimmer: React.FC<VideoTrimmerProps> = ({ clip, onSave, onClose }) =>
     setDragging(type);
   };
 
-  const handleMouseMove = (e: React.MouseEvent | MouseEvent) => {
-    if (!dragging || !trackRef.current) return;
-    
+  // Use useCallback with refs to avoid recreating listeners
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!trackRef.current) return;
+
     const rect = trackRef.current.getBoundingClientRect();
-    const offsetX = (e as any).clientX - rect.left;
+    const offsetX = e.clientX - rect.left;
     const percent = Math.max(0, Math.min(1, offsetX / rect.width));
     const time = percent * clip.duration;
 
-    if (dragging === 'start') {
-      setStart(Math.min(time, end - 0.5)); // Enforce min duration
-      if (videoRef.current) videoRef.current.currentTime = Math.min(time, end - 0.5);
-    } else {
-      setEnd(Math.max(time, start + 0.5));
-      if (videoRef.current) videoRef.current.currentTime = Math.max(time, start + 0.5);
-    }
-  };
+    // Use refs for current values to avoid stale closure
+    const currentStart = startRef.current;
+    const currentEnd = endRef.current;
 
-  const handleMouseUp = () => {
+    if (dragging === 'start') {
+      const newStart = Math.min(time, currentEnd - 0.5);
+      setStart(newStart);
+      if (videoRef.current) videoRef.current.currentTime = newStart;
+    } else if (dragging === 'end') {
+      const newEnd = Math.max(time, currentStart + 0.5);
+      setEnd(newEnd);
+      if (videoRef.current) videoRef.current.currentTime = newEnd;
+    }
+  }, [clip.duration, dragging]);
+
+  const handleMouseUp = useCallback(() => {
     setDragging(null);
-  };
+  }, []);
 
   useEffect(() => {
     if (dragging) {
-      window.addEventListener('mousemove', handleMouseMove as any);
+      window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
     }
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove as any);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [dragging, end, start]); // Dependencies for closure values
+  }, [dragging, handleMouseMove, handleMouseUp]);
 
   const save = () => {
     onSave(clip.id, start, end);
