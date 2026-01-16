@@ -105,31 +105,38 @@ export class AudioAnalyzerService {
   }
 
   // Post-process beats based on user settings (minEnergy and sensitivity)
+  // Goal: Reduce 400+ raw beats to 30-100 usable cut points for video editing
   private postProcessBeats(rawBeats: BeatMarker[], minEnergy: number, sensitivity: number): BeatMarker[] {
-    // minEnergy controls minimum interval between beats (higher = fewer beats)
-    const minInterval = 0.15 + (minEnergy * 0.5); // 0.15s to 0.65s
+    if (rawBeats.length === 0) return [];
+
+    // minEnergy controls minimum interval between beats
+    // Higher minEnergy = longer intervals = fewer cuts
+    // Range: 0.5s (minEnergy=0.01) to 4s (minEnergy=0.8)
+    const minInterval = 0.5 + (minEnergy * 4);
+
+    // sensitivity controls the target beat density
+    // Higher sensitivity = more beats kept
+    // Range: keep every 8th beat (sens=1.0) to every 2nd beat (sens=4.0)
+    const skipFactor = Math.max(1, Math.round(9 - sensitivity * 2));
+
     const filteredBeats: BeatMarker[] = [];
     let lastBeatTime = -minInterval;
+    let beatCounter = 0;
 
     for (const beat of rawBeats) {
+      // Must be at least minInterval apart
       if (beat.time - lastBeatTime >= minInterval) {
-        filteredBeats.push(beat);
-        lastBeatTime = beat.time;
+        beatCounter++;
+        // Only keep every Nth beat based on sensitivity
+        if (beatCounter % skipFactor === 0 || beat.intensity > 0.9) {
+          filteredBeats.push(beat);
+          lastBeatTime = beat.time;
+        }
       }
     }
 
-    // sensitivity controls how many beats to keep (higher = more beats)
-    const keepRatio = 0.3 + (sensitivity / 4) * 0.7; // 0.3 to 1.0
-    const finalBeats: BeatMarker[] = [];
-    const step = Math.max(1, Math.floor(1 / keepRatio));
-
-    for (let i = 0; i < filteredBeats.length; i++) {
-      if (i % step === 0 || filteredBeats[i].intensity > 0.85) {
-        finalBeats.push(filteredBeats[i]);
-      }
-    }
-
-    return finalBeats;
+    console.log(`🎚️ Beat filter: ${rawBeats.length} → ${filteredBeats.length} (interval=${minInterval.toFixed(1)}s, skip=${skipFactor})`);
+    return filteredBeats;
   }
 
   async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {

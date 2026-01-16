@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { BeatMarker, EnhancedSyncSegment, VideoClip, TransitionType } from '../types';
-import { Play, Pause, SkipBack, Loader2, Disc, Zap, Maximize2, MoveHorizontal, Scissors } from 'lucide-react';
+import { Play, Pause, SkipBack, Loader2, Disc } from 'lucide-react';
 
 // Binary search for finding segment at a given time - O(log n) instead of O(n)
 function findSegmentAtTime(segments: EnhancedSyncSegment[], time: number): EnhancedSyncSegment | null {
@@ -72,8 +72,10 @@ const Player: React.FC<PlayerProps> = ({
   });
   
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
-  const [activeClipIndex, setActiveClipIndex] = useState<number>(0);
-  const [prevClipIndex, setPrevClipIndex] = useState<number>(-1); // For crossfades
+  // Use refs for animation state to avoid re-renders during playback
+  const activeClipRef = useRef<number>(0);
+  const prevClipRef = useRef<number>(-1);
+  const [displayClipIndex, setDisplayClipIndex] = useState<number>(0); // For UI only
   const [isReady, setIsReady] = useState(false);
 
   // Initialize
@@ -141,34 +143,39 @@ const Player: React.FC<PlayerProps> = ({
       if (segments.length > 0) {
         // Use binary search for O(log n) lookup instead of O(n) .find()
         const currentSegment = findSegmentAtTime(segments, currentTime);
-        
+
         if (currentSegment) {
           const timeInSegment = currentTime - currentSegment.startTime;
-          
+          const activeClipIndex = activeClipRef.current;
+          const prevClipIndex = prevClipRef.current;
+
           // --- CUT EVENT ---
           if (currentSegment.videoIndex !== activeClipIndex) {
-            setPrevClipIndex(activeClipIndex);
-            setActiveClipIndex(currentSegment.videoIndex);
-            
-            // Init Transition Effects
-            if (currentSegment.transition === TransitionType.ZOOM) fxState.current.zoom = 1.15;
-            if (currentSegment.transition === TransitionType.GLITCH) fxState.current.glitch = 10; // Frames
+            // Update refs (no re-render)
+            prevClipRef.current = activeClipIndex;
+            activeClipRef.current = currentSegment.videoIndex;
 
-            // Prepare New Video
+            // Hide previous video immediately
+            const prevVideo = videoRefs.current[activeClipIndex];
+            if (prevVideo) {
+              prevVideo.style.opacity = '0';
+              prevVideo.style.zIndex = '0';
+              prevVideo.pause();
+            }
+
+            // Show and play new video
             const videoEl = videoRefs.current[currentSegment.videoIndex];
             if (videoEl) {
               videoEl.currentTime = currentSegment.clipStartTime + timeInSegment;
-              fxState.current.filter = currentSegment.filter;
-              if (isPlaying) videoEl.play().catch(e => { if(e.name!=='AbortError') console.warn(e)});
+              videoEl.style.opacity = '1';
+              videoEl.style.zIndex = '10';
+              videoEl.style.transform = 'scale(1)';
+              videoEl.style.filter = '';
+              if (isPlaying) videoEl.play().catch(() => {});
             }
-            
-            // Pause others (except previous if crossfading)
-            videoClips.forEach((_, idx) => {
-                if (idx !== currentSegment.videoIndex && idx !== currentSegment.prevVideoIndex) {
-                    const el = videoRefs.current[idx];
-                    if (el) el.pause();
-                }
-            });
+
+            // Update UI state less frequently (every cut is fine)
+            setDisplayClipIndex(currentSegment.videoIndex);
 
           } else {
              // --- DURING SEGMENT RENDER ---
@@ -253,7 +260,7 @@ const Player: React.FC<PlayerProps> = ({
       }
       
       // --- CANVAS RENDER ---
-      const activeVideo = videoRefs.current[activeClipIndex];
+      const activeVideo = videoRefs.current[activeClipRef.current];
       const canvas = canvasRef.current;
       if (canvas && activeVideo) {
         const ctx = canvas.getContext('2d');
@@ -266,8 +273,8 @@ const Player: React.FC<PlayerProps> = ({
            }
            ctx.drawImage(activeVideo, 0, 0, w, h);
            // Simple draw for recorder
-           if (prevClipIndex !== -1 && prevClipIndex !== activeClipIndex) {
-               const prevVideo = videoRefs.current[prevClipIndex];
+           if (prevClipRef.current !== -1 && prevClipRef.current !== activeClipRef.current) {
+               const prevVideo = videoRefs.current[prevClipRef.current];
                const currentSeg = findSegmentAtTime(segments, currentTime);
                if (prevVideo && currentSeg?.transition === TransitionType.CROSSFADE) {
                     const time = currentTime - currentSeg.startTime;
@@ -292,8 +299,11 @@ const Player: React.FC<PlayerProps> = ({
 
     if (isPlaying) {
       audio.play().catch(e => console.error("Audio play failed", e));
-      const currentVideo = videoRefs.current[activeClipIndex];
-      if (currentVideo) currentVideo.play().catch(() => {});
+      const currentVideo = videoRefs.current[activeClipRef.current];
+      if (currentVideo) {
+        currentVideo.style.opacity = '1';
+        currentVideo.play().catch(() => {});
+      }
       requestRef.current = requestAnimationFrame(animate);
     } else {
       audio.pause();
@@ -304,7 +314,7 @@ const Player: React.FC<PlayerProps> = ({
     return () => {
         if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [isPlaying, segments, activeClipIndex, videoClips]); 
+  }, [isPlaying, segments, videoClips]); 
 
   // 4. Handle External Seek
   useEffect(() => {
@@ -315,15 +325,25 @@ const Player: React.FC<PlayerProps> = ({
       // Use binary search for segment lookup
       const targetSegment = findSegmentAtTime(segments, seekTime);
       if (targetSegment) {
-         setActiveClipIndex(targetSegment.videoIndex);
-         setPrevClipIndex(-1);
+         // Hide current video
+         const currentVideo = videoRefs.current[activeClipRef.current];
+         if (currentVideo) {
+           currentVideo.style.opacity = '0';
+           currentVideo.pause();
+         }
+
+         // Update refs
+         activeClipRef.current = targetSegment.videoIndex;
+         prevClipRef.current = -1;
+         setDisplayClipIndex(targetSegment.videoIndex);
+
          fxState.current.flash = 0;
          fxState.current.zoom = 1;
          fxState.current.glitch = 0;
-         
+
          const videoEl = videoRefs.current[targetSegment.videoIndex];
          const clipData = videoClips[targetSegment.videoIndex];
-         
+
          if(videoEl && clipData) {
              const timeInSegment = seekTime - targetSegment.startTime;
              let targetTime = targetSegment.clipStartTime + timeInSegment;
@@ -332,6 +352,8 @@ const Player: React.FC<PlayerProps> = ({
                  targetTime = clipData.trimStart + ((targetTime - clipData.trimStart) % sourceDuration);
              }
              videoEl.currentTime = targetTime;
+             videoEl.style.opacity = '1';
+             videoEl.style.zIndex = '10';
          }
       }
     }
@@ -358,14 +380,16 @@ const Player: React.FC<PlayerProps> = ({
             key={clip.id}
             ref={(el) => { videoRefs.current[idx] = el; }}
             src={clip.url}
-            className={`absolute top-0 left-0 w-full h-full object-contain will-change-transform`}
-            style={{ 
-                opacity: idx === activeClipIndex ? 1 : 0,
-                zIndex: idx === activeClipIndex ? 10 : 0
+            className="absolute top-0 left-0 w-full h-full object-contain"
+            style={{
+                opacity: idx === 0 ? 1 : 0, // First clip visible initially
+                zIndex: idx === 0 ? 10 : 0,
+                transition: 'none' // No CSS transitions - we control via JS
             }}
             muted
             playsInline
-            crossOrigin="anonymous" 
+            preload="auto"
+            crossOrigin="anonymous"
           />
         ))}
 
@@ -407,28 +431,7 @@ const Player: React.FC<PlayerProps> = ({
            </div>
         </div>
         <div className="flex items-center space-x-4 text-xs font-mono text-slate-500">
-             {segments[0] && (() => {
-                 const current = segments.find(s => s.videoIndex === activeClipIndex);
-                 if (!current) return null;
-                 return (
-                     <>
-                        <div className="flex items-center space-x-2 text-slate-400">
-                            {current.transition === TransitionType.CUT && <Scissors className="w-3 h-3 text-slate-500" />}
-                            {current.transition === TransitionType.CROSSFADE && (
-                                <span className="flex items-center text-yellow-400"><MoveHorizontal className="w-3 h-3 mr-1" /> FADE</span>
-                            )}
-                            {current.transition === TransitionType.ZOOM && (
-                                <span className="flex items-center text-cyan-400"><Maximize2 className="w-3 h-3 mr-1" /> ZOOM</span>
-                            )}
-                            {current.transition === TransitionType.GLITCH && (
-                                <span className="flex items-center text-red-400"><Zap className="w-3 h-3 mr-1" /> GLITCH</span>
-                            )}
-                        </div>
-                        {current.filter !== 'none' && <span className="text-slate-300">| FX: {current.filter.toUpperCase()}</span>}
-                     </>
-                 )
-             })()}
-             <span className="ml-2 bg-slate-800 px-2 py-0.5 rounded text-slate-300">CLIP {activeClipIndex + 1}</span>
+             <span className="bg-slate-800 px-2 py-0.5 rounded text-slate-300">CLIP {displayClipIndex + 1}</span>
         </div>
       </div>
     </div>
