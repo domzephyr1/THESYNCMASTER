@@ -101,22 +101,28 @@ export class AudioAnalyzerService {
   }
 
   async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {
-    console.log("🎵 detectBeats called", { duration: buffer.duration, minEnergy, sensitivity });
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("🎵 BEAT DETECTION STARTED");
+    console.log(`   Duration: ${buffer.duration.toFixed(2)}s`);
+    console.log(`   Settings: minEnergy=${minEnergy}, sensitivity=${sensitivity}`);
 
     // 1. Try Essentia AI Detection First (with timeout)
     let essentiaBeats: BeatMarker[] | null = null;
+    const essentiaStartTime = performance.now();
 
     try {
       if (!this.essentia) {
-        // Quick timeout: 1 second max using Promise.race
+        console.log("⏳ Loading Essentia.js...");
         await Promise.race([
           this.initEssentia(),
-          new Promise(resolve => setTimeout(resolve, 1000))
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Essentia load timeout')), 3000)
+          )
         ]);
       }
 
       if (this.essentia) {
-        console.log("🎵 Running Essentia RhythmExtractor2013...");
+        console.log("✅ Essentia loaded, analyzing audio...");
         const channelData = buffer.getChannelData(0);
 
         const vectorSignal = this.essentia.arrayToVector(channelData);
@@ -124,22 +130,36 @@ export class AudioAnalyzerService {
 
         const ticks = this.essentia.vectorToArray(rhythm.ticks);
         const confidence = rhythm.confidence;
+        const bpm = rhythm.bpm;
 
         // Cleanup memory (important for WASM)
         if(vectorSignal.delete) vectorSignal.delete();
 
+        const essentiaTime = performance.now() - essentiaStartTime;
+
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        console.log("📊 ESSENTIA RESULTS:");
+        console.log(`   Beats found: ${ticks.length}`);
+        console.log(`   BPM: ${bpm?.toFixed(1) || 'N/A'}`);
+        console.log(`   Confidence: ${confidence?.toFixed(3) || 'N/A'}`);
+        console.log(`   Processing time: ${essentiaTime.toFixed(0)}ms`);
+
         if (ticks.length > 5) { // Need at least 5 beats to be valid
-          console.log(`✅ Essentia: ${ticks.length} beats (${confidence.toFixed(2)} confidence)`);
+          console.log(`   First 10 beats: ${ticks.slice(0, 10).map((t: number) => t.toFixed(2)).join(', ')}`);
+          console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
           essentiaBeats = ticks.map((time: number) => ({
             time,
-            intensity: 0.8
+            intensity: Math.min(0.9, confidence || 0.8)
           }));
         } else {
-          console.warn(`⚠️ Essentia found only ${ticks.length} beats, using fallback`);
+          console.warn(`⚠️ Only ${ticks.length} beats detected, falling back to multi-band`);
         }
+      } else {
+        console.warn("⚠️ Essentia not available after init attempt");
       }
     } catch (e) {
-      console.warn("⚠️ Essentia failed:", e);
+      console.error("❌ Essentia failed:", e);
     }
 
     // Return Essentia beats if we got them
@@ -148,18 +168,32 @@ export class AudioAnalyzerService {
     }
 
     // 2. Fallback to Multi-Band Detection
-    console.log("🎛️ Using Multi-Band Frequency Analysis (Fallback)");
+    const multibandStartTime = performance.now();
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("🎛️ MULTI-BAND DETECTION (Fallback):");
 
     const lowPeaks = await this.analyzeBand(buffer, 'lowpass', 250, 1.2, minEnergy, sensitivity);
-    const midPeaks = await this.analyzeBand(buffer, 'bandpass', 1200, 1.0, minEnergy, sensitivity);
-    const highPeaks = await this.analyzeBand(buffer, 'highpass', 4000, 0.8, minEnergy, sensitivity * 1.2);
+    console.log(`   Low freq (bass): ${lowPeaks.length} peaks`);
 
-    console.log(`  Bands: low=${lowPeaks.length}, mid=${midPeaks.length}, high=${highPeaks.length}`);
+    const midPeaks = await this.analyzeBand(buffer, 'bandpass', 1200, 1.0, minEnergy, sensitivity);
+    console.log(`   Mid freq: ${midPeaks.length} peaks`);
+
+    const highPeaks = await this.analyzeBand(buffer, 'highpass', 4000, 0.8, minEnergy, sensitivity * 1.2);
+    console.log(`   High freq: ${highPeaks.length} peaks`);
 
     const allPeaks = [...lowPeaks, ...midPeaks, ...highPeaks].sort((a, b) => a.time - b.time);
     const merged = this.mergeBeats(allPeaks, 0.15);
 
-    console.log(`✅ Multi-band detected ${merged.length} beats`);
+    const multibandTime = performance.now() - multibandStartTime;
+
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("📊 MULTI-BAND RESULTS:");
+    console.log(`   Total peaks before merge: ${allPeaks.length}`);
+    console.log(`   Beats after merge: ${merged.length}`);
+    console.log(`   Processing time: ${multibandTime.toFixed(0)}ms`);
+    console.log(`   First 10 beats: ${merged.slice(0, 10).map(b => b.time.toFixed(2)).join(', ')}`);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
     return merged;
   }
 
