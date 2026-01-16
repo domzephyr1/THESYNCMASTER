@@ -13,15 +13,17 @@ export class AudioAnalyzerService {
   }
 
   private async initEssentia() {
-    // Wait for a moment to see if script loads, or check window
+    // Wait for scripts to load
     const maxRetries = 20;
     let attempts = 0;
 
     return new Promise<void>((resolve) => {
-        const check = () => {
+        const check = async () => {
             if (typeof EssentiaWASM !== 'undefined' && typeof Essentia !== 'undefined') {
                 try {
-                    this.essentia = new Essentia(EssentiaWASM);
+                    // EssentiaWASM is a function that returns a promise
+                    const wasmModule = await EssentiaWASM();
+                    this.essentia = new Essentia(wasmModule);
                     console.log("✅ Essentia.js (Spotify AI) Initialized");
                     resolve();
                 } catch (e) {
