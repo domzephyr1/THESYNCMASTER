@@ -75,40 +75,53 @@ const Timeline: React.FC<TimelineProps> = ({
       });
     }
 
-    // Draw Beats
+    // Draw Beats - ALWAYS ON TOP with high visibility
     console.log(`🎯 Timeline beat check: duration=${duration}, beats.length=${beats.length}`);
 
     if (beats.length > 0) {
       const effectiveDuration = duration > 0 ? duration : 1;
       console.log(`📊 Timeline DRAWING ${beats.length} beats over ${effectiveDuration}s`);
 
-      ctx.fillStyle = 'rgba(250, 204, 21, 0.9)'; // Yellow 400 more visible
-      ctx.strokeStyle = '#facc15'; // Yellow 400 bright
-      ctx.lineWidth = 3; // Thicker lines
+      // Draw beat markers with GLOW effect for visibility
+      ctx.save();
+      ctx.shadowColor = '#fbbf24';
+      ctx.shadowBlur = 8;
+
+      ctx.strokeStyle = '#fbbf24'; // Amber 400 - very bright
+      ctx.lineWidth = 2;
 
       let drawnCount = 0;
       beats.forEach((beat, idx) => {
-        const x = (beat.time / effectiveDuration) * width;
+        const x = Math.round((beat.time / effectiveDuration) * width);
         if (x >= 0 && x <= width) {
-          // Draw Line
+          // Draw vertical line
           ctx.beginPath();
           ctx.moveTo(x, 0);
           ctx.lineTo(x, height);
           ctx.stroke();
-
-          // Draw Marker Head (larger)
-          ctx.beginPath();
-          ctx.arc(x, 12, 6, 0, Math.PI * 2);
-          ctx.fill();
           drawnCount++;
         }
 
         // Log first 3 beats
         if (idx < 3) {
-          console.log(`  Beat ${idx}: time=${beat.time?.toFixed(2)}s, x=${x.toFixed(1)}px`);
+          console.log(`  Beat ${idx}: time=${beat.time?.toFixed(2)}s, x=${x}px`);
         }
       });
 
+      // Draw marker heads on top (no shadow for cleaner look)
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#fbbf24'; // Amber 400
+
+      beats.forEach((beat) => {
+        const x = Math.round((beat.time / effectiveDuration) * width);
+        if (x >= 0 && x <= width) {
+          ctx.beginPath();
+          ctx.arc(x, 8, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+
+      ctx.restore();
       console.log(`📊 Timeline: Drew ${drawnCount}/${beats.length} beat markers`);
     } else {
       console.warn("🎯 Timeline: No beats to draw!");
