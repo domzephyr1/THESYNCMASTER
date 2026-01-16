@@ -7,6 +7,10 @@ export class AudioAnalyzerService {
   private audioContext: AudioContext;
   private essentia: any = null;
 
+  // Cache raw Essentia beats to avoid re-running 50s analysis
+  private cachedRawBeats: BeatMarker[] | null = null;
+  private cachedAudioDuration: number = 0;
+
   constructor() {
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
   }
@@ -100,11 +104,48 @@ export class AudioAnalyzerService {
     return waveform.map(val => val / max);
   }
 
+  // Post-process beats based on user settings (minEnergy and sensitivity)
+  private postProcessBeats(rawBeats: BeatMarker[], minEnergy: number, sensitivity: number): BeatMarker[] {
+    // minEnergy controls minimum interval between beats (higher = fewer beats)
+    const minInterval = 0.15 + (minEnergy * 0.5); // 0.15s to 0.65s
+    const filteredBeats: BeatMarker[] = [];
+    let lastBeatTime = -minInterval;
+
+    for (const beat of rawBeats) {
+      if (beat.time - lastBeatTime >= minInterval) {
+        filteredBeats.push(beat);
+        lastBeatTime = beat.time;
+      }
+    }
+
+    // sensitivity controls how many beats to keep (higher = more beats)
+    const keepRatio = 0.3 + (sensitivity / 4) * 0.7; // 0.3 to 1.0
+    const finalBeats: BeatMarker[] = [];
+    const step = Math.max(1, Math.floor(1 / keepRatio));
+
+    for (let i = 0; i < filteredBeats.length; i++) {
+      if (i % step === 0 || filteredBeats[i].intensity > 0.85) {
+        finalBeats.push(filteredBeats[i]);
+      }
+    }
+
+    console.log(`   🎚️ Post-processed: ${rawBeats.length} → ${filteredBeats.length} → ${finalBeats.length} beats`);
+    console.log(`      minInterval=${minInterval.toFixed(2)}s, keepRatio=${keepRatio.toFixed(2)}`);
+
+    return finalBeats;
+  }
+
   async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("🎵 BEAT DETECTION STARTED");
     console.log(`   Duration: ${buffer.duration.toFixed(2)}s`);
     console.log(`   Settings: minEnergy=${minEnergy}, sensitivity=${sensitivity}`);
+
+    // Check if we have cached raw beats for this audio (same duration = same audio)
+    if (this.cachedRawBeats && Math.abs(this.cachedAudioDuration - buffer.duration) < 0.1) {
+      console.log("⚡ Using cached Essentia beats (instant re-filter)");
+      return this.postProcessBeats(this.cachedRawBeats, minEnergy, sensitivity);
+    }
 
     // 1. Try Essentia AI Detection First (with timeout)
     let essentiaBeats: BeatMarker[] | null = null;
@@ -167,9 +208,14 @@ export class AudioAnalyzerService {
       console.error("❌ Essentia failed:", e);
     }
 
-    // Return Essentia beats if we got them
+    // Return Essentia beats if we got them (with post-processing based on user settings)
     if (essentiaBeats && essentiaBeats.length > 0) {
-      return essentiaBeats;
+      // Cache raw beats for instant re-filtering
+      this.cachedRawBeats = essentiaBeats;
+      this.cachedAudioDuration = buffer.duration;
+      console.log("💾 Cached raw Essentia beats for future re-analysis");
+
+      return this.postProcessBeats(essentiaBeats, minEnergy, sensitivity);
     }
 
     // 2. Fallback to Multi-Band Detection
