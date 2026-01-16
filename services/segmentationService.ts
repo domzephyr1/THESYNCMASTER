@@ -11,7 +11,39 @@ export class SegmentationService {
     duration: number
   ): { segments: EnhancedSyncSegment[], bpm: number } {
 
+    console.log('🎬 generateMontage called with:', {
+      beatsCount: beats.length,
+      clipsCount: videoClips.length,
+      duration,
+      clips: videoClips.map((c, i) => ({
+        index: i,
+        name: c.name,
+        trimStart: c.trimStart,
+        trimEnd: c.trimEnd,
+        validDuration: c.trimEnd - c.trimStart
+      }))
+    });
+
     if (!beats.length || !videoClips.length || duration === 0) {
+      console.warn('⚠️ generateMontage returning empty - missing data');
+      return { segments: [], bpm: 0 };
+    }
+
+    // Filter to only clips with valid duration (trimEnd > trimStart)
+    const validClipIndices: number[] = [];
+    videoClips.forEach((clip, index) => {
+      const validDuration = clip.trimEnd - clip.trimStart;
+      if (validDuration > 0.1) { // At least 0.1s of usable content
+        validClipIndices.push(index);
+      } else {
+        console.warn(`⚠️ Clip ${index} (${clip.name}) has invalid duration: ${validDuration}s`);
+      }
+    });
+
+    console.log('✅ Valid clips:', validClipIndices.length, 'of', videoClips.length);
+
+    if (validClipIndices.length === 0) {
+      console.error('❌ No valid clips available! All clips have trimEnd <= trimStart');
       return { segments: [], bpm: 0 };
     }
 
@@ -89,7 +121,13 @@ export class SegmentationService {
       }
 
       // -- 2. SMART CLIP SELECTION with scoring --
-      const allIndices = Array.from({ length: videoClips.length }, (_, i) => i);
+      // Only consider clips with valid duration
+      const allIndices = validClipIndices;
+
+      if (allIndices.length === 0) {
+        console.error('❌ No valid clips to select from!');
+        continue;
+      }
 
       // Score each clip
       const clipScores = allIndices.map(i => {
@@ -130,8 +168,8 @@ export class SegmentationService {
           score += meta.visualInterest * 15;
         }
 
-        // Never pick exact same as previous (unless only 1 clip)
-        if (i === lastVideoIndex && videoClips.length > 1) {
+        // Never pick exact same as previous (unless only 1 valid clip)
+        if (i === lastVideoIndex && allIndices.length > 1) {
           score -= 200;
         }
 
@@ -140,6 +178,11 @@ export class SegmentationService {
 
       // Sort by score and pick from top candidates with some randomness
       clipScores.sort((a, b) => b.score - a.score);
+
+      // Log scores for debugging
+      if (k < 5) { // Only log first 5 segments to avoid spam
+        console.log(`📊 Segment ${k} clip scores:`, clipScores.map(c => `clip${c.index}=${c.score}`).join(', '));
+      }
 
       // Pick from top 3 candidates randomly (weighted toward better scores)
       const topN = Math.min(3, clipScores.length);
@@ -154,6 +197,10 @@ export class SegmentationService {
           videoIndex = clipScores[i].index;
           break;
         }
+      }
+
+      if (k < 5) {
+        console.log(`🎯 Segment ${k}: Selected clip ${videoIndex} (${videoClips[videoIndex]?.name})`);
       }
 
       // Update usage tracking
@@ -206,6 +253,18 @@ export class SegmentationService {
       lastVideoIndex = videoIndex;
       startTime = endTime;
     }
+
+    // Log final summary
+    const usedClipCounts: Record<number, number> = {};
+    newSegments.forEach(s => {
+      usedClipCounts[s.videoIndex] = (usedClipCounts[s.videoIndex] || 0) + 1;
+    });
+    console.log('🎬 Montage generation complete:', {
+      totalSegments: newSegments.length,
+      uniqueClipsUsed: Object.keys(usedClipCounts).length,
+      clipUsage: usedClipCounts,
+      bpm: estimatedBpm
+    });
 
     return { segments: newSegments, bpm: estimatedBpm };
   }
