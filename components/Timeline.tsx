@@ -23,15 +23,27 @@ const Timeline: React.FC<TimelineProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Debug: Log props on every render
+  console.log(`🎯 Timeline RENDER: beats=${beats.length}, duration=${duration}, waveform=${waveformData.length}`);
+
   useEffect(() => {
+    console.log(`🎯 Timeline useEffect TRIGGERED: beats=${beats.length}, duration=${duration}`);
+
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      console.warn("🎯 Timeline: canvas ref is null!");
+      return;
+    }
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      console.warn("🎯 Timeline: canvas context is null!");
+      return;
+    }
 
     const width = canvas.width;
     const height = canvas.height;
+    console.log(`🎯 Timeline canvas size: ${width}x${height}`);
 
     // Clear
     ctx.clearRect(0, 0, width, height);
@@ -63,16 +75,20 @@ const Timeline: React.FC<TimelineProps> = ({
       });
     }
 
-    // Draw Beats - only if duration is valid
-    if (duration > 0 && beats.length > 0) {
-      console.log(`📊 Timeline drawing ${beats.length} beats over ${duration}s`);
+    // Draw Beats
+    console.log(`🎯 Timeline beat check: duration=${duration}, beats.length=${beats.length}`);
 
-      ctx.fillStyle = 'rgba(234, 179, 8, 0.6)'; // Yellow 500 transparent
-      ctx.strokeStyle = '#eab308'; // Yellow 500 solid
-      ctx.lineWidth = 2;
+    if (beats.length > 0) {
+      const effectiveDuration = duration > 0 ? duration : 1;
+      console.log(`📊 Timeline DRAWING ${beats.length} beats over ${effectiveDuration}s`);
 
-      beats.forEach(beat => {
-        const x = (beat.time / duration) * width;
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.9)'; // Yellow 400 more visible
+      ctx.strokeStyle = '#facc15'; // Yellow 400 bright
+      ctx.lineWidth = 3; // Thicker lines
+
+      let drawnCount = 0;
+      beats.forEach((beat, idx) => {
+        const x = (beat.time / effectiveDuration) * width;
         if (x >= 0 && x <= width) {
           // Draw Line
           ctx.beginPath();
@@ -80,12 +96,22 @@ const Timeline: React.FC<TimelineProps> = ({
           ctx.lineTo(x, height);
           ctx.stroke();
 
-          // Draw Marker Head
+          // Draw Marker Head (larger)
           ctx.beginPath();
-          ctx.arc(x, 10, 4, 0, Math.PI * 2);
+          ctx.arc(x, 12, 6, 0, Math.PI * 2);
           ctx.fill();
+          drawnCount++;
+        }
+
+        // Log first 3 beats
+        if (idx < 3) {
+          console.log(`  Beat ${idx}: time=${beat.time?.toFixed(2)}s, x=${x.toFixed(1)}px`);
         }
       });
+
+      console.log(`📊 Timeline: Drew ${drawnCount}/${beats.length} beat markers`);
+    } else {
+      console.warn("🎯 Timeline: No beats to draw!");
     }
 
   }, [waveformData, beats, duration]);
