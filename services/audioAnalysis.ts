@@ -12,6 +12,42 @@ export class AudioAnalyzerService {
     // Removed automatic init to lazy load on first use
   }
 
+  // Calculate energy envelope for the entire track (for speed ramping)
+  getEnergyEnvelope(buffer: AudioBuffer, windowCount: number = 100): number[] {
+    const rawData = buffer.getChannelData(0);
+    const windowSize = Math.floor(rawData.length / windowCount);
+    const envelope: number[] = [];
+
+    for (let i = 0; i < windowCount; i++) {
+      const start = i * windowSize;
+      let sum = 0;
+      for (let j = 0; j < windowSize && start + j < rawData.length; j++) {
+        sum += rawData[start + j] * rawData[start + j];
+      }
+      envelope.push(Math.sqrt(sum / windowSize));
+    }
+
+    // Normalize
+    const max = Math.max(...envelope);
+    return envelope.map(v => v / max);
+  }
+
+  // Get energy at a specific time
+  private getEnergyAtTime(buffer: AudioBuffer, time: number, windowMs: number = 100): number {
+    const sampleRate = buffer.sampleRate;
+    const rawData = buffer.getChannelData(0);
+    const centerSample = Math.floor(time * sampleRate);
+    const windowSamples = Math.floor((windowMs / 1000) * sampleRate);
+    const start = Math.max(0, centerSample - windowSamples / 2);
+    const end = Math.min(rawData.length, centerSample + windowSamples / 2);
+
+    let sum = 0;
+    for (let i = start; i < end; i++) {
+      sum += rawData[i] * rawData[i];
+    }
+    return Math.sqrt(sum / (end - start));
+  }
+
   private async initEssentia() {
     // Wait for scripts to load
     const maxRetries = 20;

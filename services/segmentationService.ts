@@ -1,13 +1,16 @@
 import { BeatMarker, EnhancedSyncSegment, TransitionType, VideoClip } from '../types';
 
+// Pre-roll: cut slightly BEFORE beat for perceived sync (humans anticipate)
+const PRE_ROLL_SECONDS = 0.03; // 30ms
+
 export class SegmentationService {
-  
+
   generateMontage(
-    beats: BeatMarker[], 
-    videoClips: VideoClip[], 
+    beats: BeatMarker[],
+    videoClips: VideoClip[],
     duration: number
   ): { segments: EnhancedSyncSegment[], bpm: number } {
-    
+
     if (!beats.length || !videoClips.length || duration === 0) {
       return { segments: [], bpm: 0 };
     }
@@ -21,139 +24,173 @@ export class SegmentationService {
        const bpm = 60 / avgInterval;
        estimatedBpm = Math.round(bpm);
 
-       if (bpm > 135) minSegmentDuration = 0.25; 
-       else if (bpm < 90) minSegmentDuration = 1.0; 
-       else minSegmentDuration = 0.5; 
+       // Dynamic min segment based on tempo
+       if (bpm > 135) minSegmentDuration = 0.25;
+       else if (bpm < 90) minSegmentDuration = 1.0;
+       else minSegmentDuration = 0.5;
     }
 
     const newSegments: EnhancedSyncSegment[] = [];
     let startTime = 0;
-    
+
+    // Apply pre-roll offset to beat times for tighter perceived sync
+    const adjustedBeats = beats.map(b => ({
+      ...b,
+      time: Math.max(0, b.time - PRE_ROLL_SECONDS)
+    }));
+
     // Filter beats for segments based on min duration
     const validCutTimes: number[] = [];
     const beatIndices: number[] = [];
     let lastCutTime = 0;
 
-    for (let i = 0; i < beats.length; i++) {
-        const b = beats[i];
+    for (let i = 0; i < adjustedBeats.length; i++) {
+        const b = adjustedBeats[i];
         if (b.time - lastCutTime >= minSegmentDuration) {
             validCutTimes.push(b.time);
             beatIndices.push(i);
             lastCutTime = b.time;
         }
     }
-    
+
     // Ensure we finish at the end
     if (validCutTimes.length === 0 || validCutTimes[validCutTimes.length - 1] < duration - 0.1) {
        validCutTimes.push(duration);
        beatIndices.push(beats.length - 1);
     }
-    
-    // --- ADVANCED SELECTION & TRANSITION LOGIC ---
-    const MIN_REP_INTERVAL = 15; 
-    let unusedIndices = Array.from({ length: videoClips.length }, (_, i) => i);
-    const usageHistory: Record<number, number> = {}; 
+
+    // --- SMART CLIP SELECTION WITH VARIETY ---
+    const clipUsageCount: Record<number, number> = {};
+    const recentClips: number[] = []; // Track last N clips used
+    const RECENCY_WINDOW = 3; // Don't repeat within last 3 clips
     let lastVideoIndex = -1;
 
     for (let k = 0; k < validCutTimes.length; k++) {
       const endTime = validCutTimes[k];
       if (endTime <= startTime) continue;
-      
+
       const currentBeatIdx = beatIndices[k];
       const currentBeat = beats[currentBeatIdx] || { intensity: 0.5 };
       const prevBeat = beats[beatIndices[k-1]] || { intensity: 0.5 };
-      
-      // -- 1. DETERMINE TRANSITION --
+
+      // -- 1. DETERMINE TRANSITION based on energy --
       const segmentDuration = endTime - startTime;
       const energyDelta = Math.abs(currentBeat.intensity - prevBeat.intensity);
-      
+
       let transition = TransitionType.CUT;
       if (segmentDuration < 0.4) {
-          transition = TransitionType.CUT; // Fast cuts
+          transition = TransitionType.CUT; // Fast cuts stay cuts
       } else if (energyDelta > 0.4) {
-          transition = TransitionType.GLITCH; // Big energy shift
+          transition = TransitionType.GLITCH; // Big energy shift = glitch
       } else if (currentBeat.intensity > 0.8) {
-          transition = TransitionType.ZOOM; // High energy impact
+          transition = TransitionType.ZOOM; // High energy = zoom impact
       } else if (currentBeat.intensity < 0.3 && segmentDuration > 2.0) {
-          transition = TransitionType.CROSSFADE; // Slow flow
+          transition = TransitionType.CROSSFADE; // Low energy, long = smooth
       }
 
-      // -- 2. CONTEXT-AWARE CLIP SELECTION --
+      // -- 2. SMART CLIP SELECTION with scoring --
       const allIndices = Array.from({ length: videoClips.length }, (_, i) => i);
-      
-      // Filter by Metadata (Energy Match)
-      let energyCandidates = allIndices;
-      if (videoClips.some(c => c.metadata?.processed)) {
-         energyCandidates = allIndices.filter(i => {
-             const meta = videoClips[i].metadata;
-             if (!meta || !meta.processed) return true;
-             // High Intensity -> High Brightness or High Contrast
-             if (currentBeat.intensity > 0.7) return meta.brightness > 0.5 || meta.contrast > 0.5;
-             // Low Intensity -> Darker
-             if (currentBeat.intensity < 0.4) return meta.brightness <= 0.5;
-             return true;
-         });
-         // Fallback if filtering removed all options
-         if (energyCandidates.length === 0) energyCandidates = allIndices;
+
+      // Score each clip
+      const clipScores = allIndices.map(i => {
+        let score = 100; // Base score
+        const clip = videoClips[i];
+        const meta = clip.metadata;
+
+        // Penalize recently used clips heavily
+        if (recentClips.includes(i)) {
+          const recencyIndex = recentClips.indexOf(i);
+          score -= (RECENCY_WINDOW - recencyIndex) * 30; // More recent = bigger penalty
+        }
+
+        // Penalize overused clips
+        const useCount = clipUsageCount[i] || 0;
+        const avgUse = Object.values(clipUsageCount).reduce((a, b) => a + b, 0) / videoClips.length || 0;
+        if (useCount > avgUse) {
+          score -= (useCount - avgUse) * 10;
+        }
+
+        // Bonus for matching energy (if metadata available)
+        if (meta?.processed) {
+          // High beat intensity -> prefer high motion/contrast clips
+          if (currentBeat.intensity > 0.7) {
+            if (meta.motion > 0.5) score += 15;
+            if (meta.contrast > 0.5) score += 10;
+            if (meta.visualInterest > 0.6) score += 20;
+          }
+          // Low beat intensity -> prefer calmer clips
+          if (currentBeat.intensity < 0.4) {
+            if (meta.motion < 0.4) score += 10;
+            if (meta.brightness > 0.3 && meta.brightness < 0.7) score += 5;
+          }
+        }
+
+        // Bonus for visual interest
+        if (meta?.visualInterest) {
+          score += meta.visualInterest * 15;
+        }
+
+        // Never pick exact same as previous (unless only 1 clip)
+        if (i === lastVideoIndex && videoClips.length > 1) {
+          score -= 200;
+        }
+
+        return { index: i, score };
+      });
+
+      // Sort by score and pick from top candidates with some randomness
+      clipScores.sort((a, b) => b.score - a.score);
+
+      // Pick from top 3 candidates randomly (weighted toward better scores)
+      const topN = Math.min(3, clipScores.length);
+      const weights = clipScores.slice(0, topN).map((c, idx) => Math.max(1, c.score) * (topN - idx));
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      let random = Math.random() * totalWeight;
+
+      let videoIndex = clipScores[0].index;
+      for (let i = 0; i < topN; i++) {
+        random -= weights[i];
+        if (random <= 0) {
+          videoIndex = clipScores[i].index;
+          break;
+        }
       }
 
-      // -- 3. ANTI-REPETITION LOGIC --
-      const isUnused = (i: number) => unusedIndices.includes(i);
-      const isTimeReady = (i: number) => {
-          const lastEnd = usageHistory[i] || -Infinity;
-          return startTime - lastEnd >= MIN_REP_INTERVAL;
-      };
-      const isNotPrevious = (i: number) => i !== lastVideoIndex;
-
-      let finalCandidates: number[] = [];
-
-      // Priority 1: Unused & Matches Energy & Not Previous
-      finalCandidates = energyCandidates.filter(i => isUnused(i) && isNotPrevious(i));
-
-      // Priority 2: Unused (Any energy)
-      if (finalCandidates.length === 0) {
-        finalCandidates = allIndices.filter(i => isUnused(i) && isNotPrevious(i));
-      }
-      
-      // Priority 3: Used & Ready & Matches Energy
-      if (finalCandidates.length === 0) {
-        energyCandidates.filter(i => isTimeReady(i) && isNotPrevious(i));
+      // Update usage tracking
+      clipUsageCount[videoIndex] = (clipUsageCount[videoIndex] || 0) + 1;
+      recentClips.push(videoIndex);
+      if (recentClips.length > RECENCY_WINDOW) {
+        recentClips.shift();
       }
 
-      // Priority 4: Used & Not Previous (Any)
-      if (finalCandidates.length === 0) {
-        finalCandidates = allIndices.filter(i => isNotPrevious(i));
-      }
-
-      // Priority 5: Desperation
-      if (finalCandidates.length === 0) finalCandidates = allIndices;
-
-      const videoIndex = finalCandidates[Math.floor(Math.random() * finalCandidates.length)];
-      
-      // Update History
-      if (isUnused(videoIndex)) {
-         unusedIndices = unusedIndices.filter(i => i !== videoIndex);
-      }
-      usageHistory[videoIndex] = endTime;
-      
-      // -- 4. TRIM LOGIC --
+      // -- 3. SMART TRIM LOGIC --
       const clip = videoClips[videoIndex];
       let clipStartTime = clip.trimStart;
       const validClipDuration = clip.trimEnd - clip.trimStart;
-      
+
       if (validClipDuration > segmentDuration) {
+        // Pick a random but interesting start point
         const maxStart = clip.trimEnd - segmentDuration;
-        clipStartTime = clip.trimStart + (Math.random() * (maxStart - clip.trimStart));
+        // Slight bias toward middle of clip (often more interesting)
+        const bias = 0.3; // 30% bias toward center
+        const center = (clip.trimStart + maxStart) / 2;
+        const randomOffset = (Math.random() - 0.5) * (maxStart - clip.trimStart);
+        clipStartTime = center + randomOffset * (1 - bias);
+        clipStartTime = Math.max(clip.trimStart, Math.min(maxStart, clipStartTime));
       } else {
-        // Loop protection: if segment is longer than clip, we start at beginning 
-        // Logic handled in Player for looping, here we just set start
         clipStartTime = clip.trimStart;
       }
 
-      // -- 5. FX --
+      // -- 4. DYNAMIC FX based on energy --
       let filter: 'none' | 'bw' | 'contrast' | 'cyber' = 'none';
-      if (transition === TransitionType.GLITCH) filter = 'cyber';
-      else if (currentBeat.intensity > 0.9) filter = 'contrast';
+      if (transition === TransitionType.GLITCH) {
+        filter = 'cyber';
+      } else if (currentBeat.intensity > 0.9) {
+        filter = 'contrast';
+      } else if (currentBeat.intensity < 0.2 && segmentDuration > 1.5) {
+        // Occasional B&W for slow, quiet moments
+        filter = Math.random() > 0.7 ? 'bw' : 'none';
+      }
 
       newSegments.push({
         startTime,
@@ -165,7 +202,7 @@ export class SegmentationService {
         transition,
         prevVideoIndex: lastVideoIndex
       });
-      
+
       lastVideoIndex = videoIndex;
       startTime = endTime;
     }

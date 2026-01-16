@@ -1,6 +1,8 @@
 export interface BeatMarker {
   time: number; // Time in seconds
   intensity: number; // 0-1 scale of detected peak
+  energy?: number; // Local energy level (for speed ramping)
+  isDownbeat?: boolean; // First beat of a bar
 }
 
 export enum TransitionType {
@@ -13,6 +15,8 @@ export enum TransitionType {
 export interface ClipMetadata {
   brightness: number; // 0-1
   contrast: number;   // 0-1 (measure of variance)
+  motion: number;     // 0-1 (amount of motion/action)
+  visualInterest: number; // 0-1 (combined score)
   processed: boolean;
 }
 
