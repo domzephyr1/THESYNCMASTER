@@ -1,6 +1,29 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { BeatMarker, EnhancedSyncSegment, VideoClip, TransitionType } from '../types';
 import { Play, Pause, SkipBack, Loader2, Disc, Zap, Maximize2, MoveHorizontal, Scissors } from 'lucide-react';
+
+// Binary search for finding segment at a given time - O(log n) instead of O(n)
+function findSegmentAtTime(segments: EnhancedSyncSegment[], time: number): EnhancedSyncSegment | null {
+  if (segments.length === 0) return null;
+
+  let left = 0;
+  let right = segments.length - 1;
+
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2);
+    const seg = segments[mid];
+
+    if (time >= seg.startTime && time < seg.endTime) {
+      return seg;
+    } else if (time < seg.startTime) {
+      right = mid - 1;
+    } else {
+      left = mid + 1;
+    }
+  }
+
+  return null;
+}
 
 interface PlayerProps {
   audioUrl: string;
@@ -116,9 +139,8 @@ const Player: React.FC<PlayerProps> = ({
       if (fxState.current.zoom < 1.001) fxState.current.zoom = 1.0;
 
       if (segments.length > 0) {
-        const currentSegment = segments.find(
-          seg => currentTime >= seg.startTime && currentTime < seg.endTime
-        );
+        // Use binary search for O(log n) lookup instead of O(n) .find()
+        const currentSegment = findSegmentAtTime(segments, currentTime);
         
         if (currentSegment) {
           const timeInSegment = currentTime - currentSegment.startTime;
@@ -246,7 +268,7 @@ const Player: React.FC<PlayerProps> = ({
            // Simple draw for recorder
            if (prevClipIndex !== -1 && prevClipIndex !== activeClipIndex) {
                const prevVideo = videoRefs.current[prevClipIndex];
-               const currentSeg = segments.find(s => currentTime >= s.startTime && currentTime < s.endTime);
+               const currentSeg = findSegmentAtTime(segments, currentTime);
                if (prevVideo && currentSeg?.transition === TransitionType.CROSSFADE) {
                     const time = currentTime - currentSeg.startTime;
                     if (time < 0.5) {
@@ -288,11 +310,10 @@ const Player: React.FC<PlayerProps> = ({
   useEffect(() => {
     if (seekTime !== null && audioRef.current) {
       audioRef.current.currentTime = seekTime;
-      onTimeUpdate(seekTime); 
-      
-      const targetSegment = segments.find(
-        seg => seekTime >= seg.startTime && seekTime < seg.endTime
-      );
+      onTimeUpdate(seekTime);
+
+      // Use binary search for segment lookup
+      const targetSegment = findSegmentAtTime(segments, seekTime);
       if (targetSegment) {
          setActiveClipIndex(targetSegment.videoIndex);
          setPrevClipIndex(-1);

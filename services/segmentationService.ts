@@ -49,17 +49,27 @@ export class SegmentationService {
 
     // --- BPM Calculation ---
     let estimatedBpm = 0;
-    let minSegmentDuration = 0.5; // Default
+    let minSegmentDuration = 1.5; // Default (increased for better performance)
 
     if (beats.length > 1) {
        const avgInterval = (beats[beats.length - 1].time - beats[0].time) / beats.length;
        const bpm = 60 / avgInterval;
        estimatedBpm = Math.round(bpm);
 
-       // Dynamic min segment based on tempo
-       if (bpm > 135) minSegmentDuration = 0.25;
-       else if (bpm < 90) minSegmentDuration = 1.0;
-       else minSegmentDuration = 0.5;
+       // Dynamic min segment based on tempo - increased durations for stability
+       if (bpm > 150) minSegmentDuration = 0.5;       // Very fast: 0.5s cuts
+       else if (bpm > 120) minSegmentDuration = 0.75; // Fast: 0.75s cuts
+       else if (bpm > 100) minSegmentDuration = 1.0;  // Medium: 1s cuts
+       else if (bpm > 80) minSegmentDuration = 1.5;   // Slow-medium: 1.5s cuts
+       else minSegmentDuration = 2.0;                 // Slow: 2s cuts
+    }
+
+    // Cap maximum segments to prevent performance issues
+    const MAX_SEGMENTS = 100;
+    const estimatedSegments = Math.ceil(duration / minSegmentDuration);
+    if (estimatedSegments > MAX_SEGMENTS) {
+      minSegmentDuration = duration / MAX_SEGMENTS;
+      console.log(`⚠️ Capping segments: adjusted minSegmentDuration to ${minSegmentDuration.toFixed(2)}s for max ${MAX_SEGMENTS} segments`);
     }
 
     const newSegments: EnhancedSyncSegment[] = [];
