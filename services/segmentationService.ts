@@ -284,9 +284,9 @@ export class SegmentationService {
 
     scored.sort((a, b) => b.score - a.score);
 
-    // Slight randomness among top candidates
-    const topCandidates = scored.slice(0, Math.max(2, Math.floor(clips.length * 0.3)));
-    const selected = topCandidates[Math.floor(Math.random() * Math.min(3, topCandidates.length))];
+    // Randomness among top 50% of candidates to use more clips
+    const topCandidates = scored.slice(0, Math.max(3, Math.ceil(clips.length * 0.5)));
+    const selected = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
     return { index: selected.index };
   }
