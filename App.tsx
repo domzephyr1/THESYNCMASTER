@@ -64,6 +64,15 @@ function App() {
   const [clipScenes, setClipScenes] = useState<Record<string, SceneMarker[]>>({});
   const [detectingScenes, setDetectingScenes] = useState<string | null>(null);
 
+  // Toast notification state
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Show toast helper
+  const showToast = (message: string, duration: number = 2500) => {
+    setToast(message);
+    setTimeout(() => setToast(null), duration);
+  };
+
   // Track Object URLs for cleanup to prevent memory leaks
   const urlsToRevoke = useRef<string[]>([]);
 
@@ -288,8 +297,10 @@ function App() {
         const detectedBeats = await audioService.detectBeats(audioBuffer, minEnergy, peakSensitivity);
         console.log(`✅ Detected ${detectedBeats.length} beats`);
         setBeats(detectedBeats);
+        showToast(`✓ ${detectedBeats.length} beat markers synced!`);
     } catch(e) {
         console.error("Beat detection failed:", e);
+        showToast("Beat detection failed");
     } finally {
         setIsAnalyzing(false);
     }
@@ -796,11 +807,21 @@ function App() {
         )}
 
         {trimmingClip && (
-          <VideoTrimmer 
+          <VideoTrimmer
             clip={trimmingClip}
             onSave={handleTrimUpdate}
             onClose={() => setTrimmingClip(null)}
           />
+        )}
+
+        {/* Toast Notification */}
+        {toast && (
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] animate-fade-in-up">
+            <div className="px-6 py-3 bg-slate-800 border border-cyan-500/50 rounded-lg shadow-lg shadow-cyan-500/20 text-cyan-400 font-mono text-sm flex items-center gap-2">
+              <Zap className="w-4 h-4" />
+              {toast}
+            </div>
+          </div>
         )}
       </div>
     </div>
