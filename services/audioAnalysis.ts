@@ -71,37 +71,22 @@ export class AudioAnalyzerService {
     sensitivity: number = 1.5
   ): Promise<{ beats: BeatMarker[], phraseData: PhraseData }> {
 
-    console.log(`🎵 === ENHANCED ANALYSIS START ===`);
-
     // 1. Get raw beats
     const rawBeats = await this.detectBeats(buffer, minEnergy, sensitivity);
-    console.log(`🎵 STEP 1 - Raw beats: ${rawBeats.length}`);
-    console.log(`🎵 STEP 1 - First beat:`, rawBeats[0]);
-    console.log(`🎵 STEP 1 - First beat.time: ${rawBeats[0]?.time}, typeof: ${typeof rawBeats[0]?.time}, isNaN: ${isNaN(rawBeats[0]?.time)}`);
 
     // 2. Analyze energy envelope for drop detection
     const energyEnvelope = this.getEnergyEnvelope(buffer);
     const drops = this.detectDrops(energyEnvelope, buffer.duration);
-    console.log(`🎵 STEP 2 - Drops detected: ${drops.length}`);
 
     // 3. Estimate BPM and bar structure
     const bpm = this.estimateBPM(rawBeats);
     const barDuration = (60 / bpm) * 4;
-    console.log(`🎵 STEP 3 - BPM: ${bpm}, barDuration: ${barDuration}`);
 
     // 4. Assign phrase positions to beats
     const enhancedBeats = this.assignPhrasePositions(rawBeats, barDuration, drops);
-    console.log(`🎵 STEP 4 - Enhanced beats: ${enhancedBeats.length}`);
-    console.log(`🎵 STEP 4 - First enhanced beat:`, enhancedBeats[0]);
-    console.log(`🎵 STEP 4 - First enhanced beat.time: ${enhancedBeats[0]?.time}, isNaN: ${isNaN(enhancedBeats[0]?.time)}`);
 
     // 5. Identify hero moments
     const finalBeats = this.identifyHeroMoments(enhancedBeats, drops);
-    console.log(`🎵 STEP 5 - Final beats: ${finalBeats.length}`);
-    console.log(`🎵 STEP 5 - First final beat:`, finalBeats[0]);
-    console.log(`🎵 STEP 5 - First final beat.time: ${finalBeats[0]?.time}, isNaN: ${isNaN(finalBeats[0]?.time)}`);
-
-    console.log(`🎵 === ENHANCED ANALYSIS COMPLETE ===`);
 
     const phraseData: PhraseData = {
       barDuration,
@@ -256,57 +241,25 @@ export class AudioAnalyzerService {
 
     if (this.essentia) {
       try {
-        console.log("🔍 DEBUG: Starting Essentia analysis...");
         const channelData = buffer.getChannelData(0);
-        console.log(`🔍 DEBUG: Channel data length: ${channelData.length}, sample rate: ${buffer.sampleRate}`);
-
         const vectorSignal = this.essentia.arrayToVector(channelData);
-        console.log(`🔍 DEBUG: Created vector signal, length: ${vectorSignal.size ? vectorSignal.size() : 'unknown'}`);
-
         const rhythm = this.essentia.RhythmExtractor2013(vectorSignal);
-        console.log(`🔍 DEBUG: RhythmExtractor2013 completed`);
-
         const ticks = this.essentia.vectorToArray(rhythm.ticks);
         const confidence = rhythm.confidence;
-        console.log(`🔍 DEBUG: vectorToArray result - ticks type: ${typeof ticks}, length: ${ticks.length}`);
-        console.log(`🔍 DEBUG: ticks isArray: ${Array.isArray(ticks)}, confidence: ${confidence}`);
 
         if (vectorSignal.delete) vectorSignal.delete();
 
         if (ticks.length > 0) {
-          console.log(`✅ Essentia found ${ticks.length} beats with ${confidence} confidence.`);
-
-          // Debug: Check ticks object type and access methods
-          console.log(`🎵 TICKS OBJECT:`, Object.getOwnPropertyNames(ticks));
-          console.log(`🎵 TICKS[0]:`, ticks[0], `TICKS[1]:`, ticks[1]);
-
-          // Convert Essentia vector to proper JavaScript array
+          // Convert Essentia vector to proper JavaScript array (fixes NaN issue)
           const ticksArray: number[] = [];
           for (let i = 0; i < ticks.length; i++) {
             ticksArray.push(ticks[i]);
           }
 
-          console.log(`🎵 CONVERTED ARRAY: [${ticksArray.slice(0, 5).map((t, i) => `${i}:${t.toFixed(3)}`).join(', ')}]`);
-
-          const beatMarkers = ticksArray.map((time: number, index: number) => {
-            if (index < 3) { // Only log first 3 for brevity
-              console.log(`🎵 MAP[${index}]: input time=${time}, type=${typeof time}, isNaN=${isNaN(time)}`);
-            }
-            const marker = {
-              time: time,
-              intensity: 0.8
-            };
-            if (index < 3) {
-              console.log(`🎵 MAP[${index}]: created marker.time=${marker.time}, marker.intensity=${marker.intensity}`);
-            }
-            return marker;
-          });
-
-          console.log(`🎵 FINAL RESULT: beatMarkers[0]=`, beatMarkers[0]);
-          console.log(`🎵 FINAL RESULT: beatMarkers[0].time=`, beatMarkers[0]?.time);
-          console.log(`🎵 FINAL RESULT: typeof beatMarkers[0].time=`, typeof beatMarkers[0]?.time);
-
-          return beatMarkers;
+          return ticksArray.map((time: number) => ({
+            time,
+            intensity: 0.8
+          }));
         }
       } catch (e) {
         console.warn("Essentia analysis failed, falling back to Multi-Band", e);
