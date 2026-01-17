@@ -78,6 +78,11 @@ const Player: React.FC<PlayerProps> = ({
   const [displayClipIndex, setDisplayClipIndex] = useState<number>(0); // For UI only
   const [isReady, setIsReady] = useState(false);
 
+  // Predictive double-buffering state
+  const nextSegmentIndexRef = useRef<number>(-1);
+  const preloadedClipIndexRef = useRef<number>(-1);
+  const preloadingRef = useRef<boolean>(false);
+
   // Initialize
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
@@ -164,9 +169,11 @@ const Player: React.FC<PlayerProps> = ({
 
           // --- CUT EVENT ---
           if (currentSegment.videoIndex !== activeClipIndex) {
+            const newClipIndex = currentSegment.videoIndex;
+
             // Update refs (no re-render)
             prevClipRef.current = activeClipIndex;
-            activeClipRef.current = currentSegment.videoIndex;
+            activeClipRef.current = newClipIndex;
 
             // Hide previous video immediately
             const prevVideo = videoRefs.current[activeClipIndex];
@@ -177,20 +184,46 @@ const Player: React.FC<PlayerProps> = ({
             }
 
             // Show and play new video
-            const videoEl = videoRefs.current[currentSegment.videoIndex];
+            const videoEl = videoRefs.current[newClipIndex];
             if (videoEl) {
-              videoEl.currentTime = currentSegment.clipStartTime + timeInSegment;
+              // Check if this clip was preloaded
+              const wasPreloaded = preloadedClipIndexRef.current === newClipIndex;
+
+              // Only seek if NOT preloaded (preloaded clips are already at correct position)
+              if (!wasPreloaded) {
+                videoEl.currentTime = currentSegment.clipStartTime + timeInSegment;
+              }
+
               videoEl.style.opacity = '1';
               videoEl.style.zIndex = '10';
               videoEl.style.transform = 'scale(1)';
               videoEl.style.filter = '';
               // Apply speed ramping if present
               videoEl.playbackRate = currentSegment.speedMultiplier || 1.0;
-              if (isPlaying) videoEl.play().catch(() => {});
+
+              // Only play if buffer is ready (prevents freeze frames)
+              if (isPlaying) {
+                if (videoEl.readyState >= 3 || wasPreloaded) {
+                  // HAVE_FUTURE_DATA or preloaded = ready to play
+                  videoEl.play().catch(() => {});
+                } else {
+                  // Wait for buffer
+                  const onCanPlay = () => {
+                    videoEl.play().catch(() => {});
+                    videoEl.removeEventListener('canplay', onCanPlay);
+                  };
+                  videoEl.addEventListener('canplay', onCanPlay, { once: true });
+                }
+              }
+
+              // Reset preload state for this clip
+              if (wasPreloaded) {
+                preloadedClipIndexRef.current = -1;
+              }
             }
 
             // Update UI state less frequently (every cut is fine)
-            setDisplayClipIndex(currentSegment.videoIndex);
+            setDisplayClipIndex(newClipIndex);
 
           } else {
              // --- DURING SEGMENT RENDER ---
@@ -270,10 +303,69 @@ const Player: React.FC<PlayerProps> = ({
                  
                  activeVideo.style.filter = cssFilter;
              }
+
+             // --- PREDICTIVE PRELOADING (Look-ahead) ---
+             // Find next segment
+             const currentSegmentIndex = segments.findIndex(seg =>
+               currentTime >= seg.startTime && currentTime < seg.endTime
+             );
+
+             if (currentSegmentIndex >= 0 && currentSegmentIndex < segments.length - 1) {
+               const nextSegment = segments[currentSegmentIndex + 1];
+               const timeUntilNextCut = nextSegment.startTime - currentTime;
+
+               // Start preloading 500ms before cut
+               if (timeUntilNextCut < 0.5 && timeUntilNextCut > 0) {
+                 const nextClipIndex = nextSegment.videoIndex;
+
+                 // Only preload if not already preloaded and not currently preloading
+                 if (nextClipIndex !== preloadedClipIndexRef.current &&
+                     nextClipIndex !== activeClipIndex &&
+                     !preloadingRef.current) {
+
+                   preloadingRef.current = true;
+                   const nextVideo = videoRefs.current[nextClipIndex];
+
+                   if (nextVideo) {
+                     // Seek to the start position for next segment
+                     const targetTime = nextSegment.clipStartTime;
+
+                     // Check if we need to seek
+                     if (Math.abs(nextVideo.currentTime - targetTime) > 0.1) {
+                       nextVideo.currentTime = targetTime;
+
+                       // Wait for buffer to be ready
+                       const onSeeked = () => {
+                         preloadedClipIndexRef.current = nextClipIndex;
+                         nextSegmentIndexRef.current = currentSegmentIndex + 1;
+                         preloadingRef.current = false;
+                         nextVideo.removeEventListener('seeked', onSeeked);
+                         nextVideo.removeEventListener('canplay', onSeeked);
+                       };
+
+                       nextVideo.addEventListener('seeked', onSeeked, { once: true });
+                       nextVideo.addEventListener('canplay', onSeeked, { once: true });
+
+                       // Timeout fallback in case events don't fire
+                       setTimeout(() => {
+                         if (preloadingRef.current) {
+                           preloadedClipIndexRef.current = nextClipIndex;
+                           preloadingRef.current = false;
+                         }
+                       }, 300);
+                     } else {
+                       // Already at correct position
+                       preloadedClipIndexRef.current = nextClipIndex;
+                       preloadingRef.current = false;
+                     }
+                   }
+                 }
+               }
+             }
           }
         }
       }
-      
+
       // --- CANVAS RENDER ---
       const activeVideo = videoRefs.current[activeClipRef.current];
       const canvas = canvasRef.current;
