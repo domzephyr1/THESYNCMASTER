@@ -358,15 +358,17 @@ export class SegmentationService {
 
     const availableDuration = clip.trimEnd - clip.trimStart;
 
+    // If segment is longer than available clip, start at beginning
+    if (segmentDuration >= availableDuration) {
+      return clip.trimStart;
+    }
+
     // Hero moments use peak motion timestamp
     if (isHero && clip.metadata?.peakMotionTimestamp) {
       const peakTime = clip.metadata.peakMotionTimestamp;
       const startTime = Math.max(clip.trimStart, peakTime - segmentDuration / 2);
-      return Math.min(startTime, clip.trimEnd - segmentDuration);
-    }
-
-    if (segmentDuration >= availableDuration) {
-      return clip.trimStart;
+      const maxStart = clip.trimEnd - segmentDuration;
+      return Math.max(clip.trimStart, Math.min(startTime, maxStart));
     }
 
     const maxStart = clip.trimEnd - segmentDuration;

@@ -199,7 +199,7 @@ const Player: React.FC<PlayerProps> = ({
               videoEl.style.transform = 'scale(1)';
               videoEl.style.filter = '';
               // Apply speed ramping if present
-              videoEl.playbackRate = currentSegment.speedMultiplier || 1.0;
+              videoEl.playbackRate = currentSegment.playbackSpeed || 1.0;
 
               // Only play if buffer is ready (prevents freeze frames)
               if (isPlaying) {
