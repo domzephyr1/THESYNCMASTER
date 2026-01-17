@@ -71,25 +71,37 @@ export class AudioAnalyzerService {
     sensitivity: number = 1.5
   ): Promise<{ beats: BeatMarker[], phraseData: PhraseData }> {
 
+    console.log(`🎵 === ENHANCED ANALYSIS START ===`);
+
     // 1. Get raw beats
     const rawBeats = await this.detectBeats(buffer, minEnergy, sensitivity);
-    console.log(`🎵 Raw beats: ${rawBeats.length}, first time: ${rawBeats[0]?.time}, isNaN: ${isNaN(rawBeats[0]?.time)}`);
+    console.log(`🎵 STEP 1 - Raw beats: ${rawBeats.length}`);
+    console.log(`🎵 STEP 1 - First beat:`, rawBeats[0]);
+    console.log(`🎵 STEP 1 - First beat.time: ${rawBeats[0]?.time}, typeof: ${typeof rawBeats[0]?.time}, isNaN: ${isNaN(rawBeats[0]?.time)}`);
 
     // 2. Analyze energy envelope for drop detection
     const energyEnvelope = this.getEnergyEnvelope(buffer);
     const drops = this.detectDrops(energyEnvelope, buffer.duration);
+    console.log(`🎵 STEP 2 - Drops detected: ${drops.length}`);
 
     // 3. Estimate BPM and bar structure
     const bpm = this.estimateBPM(rawBeats);
     const barDuration = (60 / bpm) * 4;
+    console.log(`🎵 STEP 3 - BPM: ${bpm}, barDuration: ${barDuration}`);
 
     // 4. Assign phrase positions to beats
     const enhancedBeats = this.assignPhrasePositions(rawBeats, barDuration, drops);
-    console.log(`🎵 Enhanced beats: ${enhancedBeats.length}, first time: ${enhancedBeats[0]?.time}, isNaN: ${isNaN(enhancedBeats[0]?.time)}`);
+    console.log(`🎵 STEP 4 - Enhanced beats: ${enhancedBeats.length}`);
+    console.log(`🎵 STEP 4 - First enhanced beat:`, enhancedBeats[0]);
+    console.log(`🎵 STEP 4 - First enhanced beat.time: ${enhancedBeats[0]?.time}, isNaN: ${isNaN(enhancedBeats[0]?.time)}`);
 
     // 5. Identify hero moments
     const finalBeats = this.identifyHeroMoments(enhancedBeats, drops);
-    console.log(`🎵 Final beats: ${finalBeats.length}, first time: ${finalBeats[0]?.time}, isNaN: ${isNaN(finalBeats[0]?.time)}`);
+    console.log(`🎵 STEP 5 - Final beats: ${finalBeats.length}`);
+    console.log(`🎵 STEP 5 - First final beat:`, finalBeats[0]);
+    console.log(`🎵 STEP 5 - First final beat.time: ${finalBeats[0]?.time}, isNaN: ${isNaN(finalBeats[0]?.time)}`);
+
+    console.log(`🎵 === ENHANCED ANALYSIS COMPLETE ===`);
 
     const phraseData: PhraseData = {
       barDuration,
@@ -244,28 +256,49 @@ export class AudioAnalyzerService {
 
     if (this.essentia) {
       try {
-        console.log("Running Essentia RhythmExtractor2013...");
+        console.log("🔍 DEBUG: Starting Essentia analysis...");
         const channelData = buffer.getChannelData(0);
+        console.log(`🔍 DEBUG: Channel data length: ${channelData.length}, sample rate: ${buffer.sampleRate}`);
+
         const vectorSignal = this.essentia.arrayToVector(channelData);
+        console.log(`🔍 DEBUG: Created vector signal, length: ${vectorSignal.size ? vectorSignal.size() : 'unknown'}`);
+
         const rhythm = this.essentia.RhythmExtractor2013(vectorSignal);
+        console.log(`🔍 DEBUG: RhythmExtractor2013 completed`);
+
         const ticks = this.essentia.vectorToArray(rhythm.ticks);
         const confidence = rhythm.confidence;
+        console.log(`🔍 DEBUG: vectorToArray result - ticks type: ${typeof ticks}, length: ${ticks.length}`);
+        console.log(`🔍 DEBUG: ticks isArray: ${Array.isArray(ticks)}, confidence: ${confidence}`);
 
         if (vectorSignal.delete) vectorSignal.delete();
 
         if (ticks.length > 0) {
-          console.log(`Essentia found ${ticks.length} beats with ${confidence} confidence.`);
-          console.log(`🎵 First 3 ticks: ${ticks.slice(0, 3).map(t => t.toFixed(3)).join(', ')}`);
-          const beatMarkers = ticks.map((time: number) => {
-            console.log(`🎵 Mapping time: ${time}, type: ${typeof time}, isNaN: ${isNaN(time)}`);
+          console.log(`✅ Essentia found ${ticks.length} beats with ${confidence} confidence.`);
+          console.log(`🎵 RAW TICKS: [${ticks.slice(0, 5).map((t, i) => `${i}:${t}`).join(', ')}]`);
+
+          // Test individual tick access
+          console.log(`🎵 Tick[0] type: ${typeof ticks[0]}, value: ${ticks[0]}, isNaN: ${isNaN(ticks[0])}`);
+          console.log(`🎵 Tick[1] type: ${typeof ticks[1]}, value: ${ticks[1]}, isNaN: ${isNaN(ticks[1])}`);
+
+          const beatMarkers = ticks.map((time: number, index: number) => {
+            if (index < 3) { // Only log first 3 for brevity
+              console.log(`🎵 MAP[${index}]: input time=${time}, type=${typeof time}, isNaN=${isNaN(time)}`);
+            }
             const marker = {
-              time,
+              time: time,
               intensity: 0.8
             };
-            console.log(`🎵 Created marker: time=${marker.time}, intensity=${marker.intensity}`);
+            if (index < 3) {
+              console.log(`🎵 MAP[${index}]: created marker.time=${marker.time}, marker.intensity=${marker.intensity}`);
+            }
             return marker;
           });
-          console.log(`🎵 First beat marker: time=${beatMarkers[0]?.time}, isNaN=${isNaN(beatMarkers[0]?.time)}`);
+
+          console.log(`🎵 FINAL RESULT: beatMarkers[0]=`, beatMarkers[0]);
+          console.log(`🎵 FINAL RESULT: beatMarkers[0].time=`, beatMarkers[0]?.time);
+          console.log(`🎵 FINAL RESULT: typeof beatMarkers[0].time=`, typeof beatMarkers[0]?.time);
+
           return beatMarkers;
         }
       } catch (e) {

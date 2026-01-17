@@ -26,19 +26,32 @@ const Timeline: React.FC<TimelineProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    console.log('🎯 TIMELINE: useEffect triggered');
+    console.log('🎯 TIMELINE: beats prop:', beats);
+    console.log('🎯 TIMELINE: beats.length:', beats.length);
+    console.log('🎯 TIMELINE: beats[0]:', beats[0]);
+    console.log('🎯 TIMELINE: beats[0]?.time:', beats[0]?.time);
+    console.log('🎯 TIMELINE: typeof beats[0]?.time:', typeof beats[0]?.time);
+
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      console.log('🎯 TIMELINE: No canvas ref');
+      return;
+    }
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      console.log('🎯 TIMELINE: No canvas context');
+      return;
+    }
 
     const width = canvas.width;
     const height = canvas.height;
 
     // DEBUG: Log beat rendering data
-    console.log('🎯 TIMELINE DEBUG:', `beatsCount=${beats.length}, duration=${(duration || 0).toFixed(2)}, width=${width}, hasWaveform=${waveformData.length > 0}`);
+    console.log('🎯 TIMELINE RENDER:', `beatsCount=${beats.length}, duration=${(duration || 0).toFixed(2)}, width=${width}, hasWaveform=${waveformData.length > 0}`);
     if (beats.length > 0) {
-      console.log('🎯 FIRST 3 BEATS:', beats.slice(0, 3).map(b => `time=${(b?.time || 0).toFixed(2)}, intensity=${(b?.intensity || 0).toFixed(2)}`).join(' | '));
+      console.log('🎯 TIMELINE BEATS:', beats.slice(0, 3).map((b, i) => `beat[${i}]: time=${b?.time}, intensity=${b?.intensity}, isNaN=${isNaN(b?.time)}`).join(' | '));
     }
 
     // Clear

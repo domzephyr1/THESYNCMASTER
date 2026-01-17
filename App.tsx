@@ -289,11 +289,20 @@ function App() {
       await new Promise(resolve => setTimeout(resolve, 500));
 
       const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(buffer, minEnergy, peakSensitivity);
-      console.log('🎵 BEFORE SET STATE:', `detectedBeats length=${detectedBeats.length}, first time=${detectedBeats[0]?.time}, isNaN=${isNaN(detectedBeats[0]?.time)}`);
+      console.log('📝 APP: Received beats from service:', detectedBeats.length);
+      console.log('📝 APP: First detected beat:', detectedBeats[0]);
+      console.log('📝 APP: detectedBeats[0]?.time:', detectedBeats[0]?.time);
+      console.log('📝 APP: typeof detectedBeats[0]?.time:', typeof detectedBeats[0]?.time);
+
       setBeats(detectedBeats);
       setPhraseData(detectedPhraseData);
 
-      console.log('🎵 BEATS DETECTED:', `count=${detectedBeats.length}, firstBeat=${detectedBeats[0]?.time?.toFixed(2) ?? 'none'}`);
+      // Verify state was set correctly
+      setTimeout(() => {
+        console.log('📝 APP: After setState, beats state length:', beats.length);
+        console.log('📝 APP: After setState, first beat:', beats[0]);
+        console.log('📝 APP: After setState, beats[0]?.time:', beats[0]?.time);
+      }, 0);
 
       const wave = audioService.getWaveformData(buffer, 300);
       setWaveformData(wave);
