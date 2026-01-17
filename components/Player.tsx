@@ -171,6 +171,8 @@ const Player: React.FC<PlayerProps> = ({
               videoEl.style.zIndex = '10';
               videoEl.style.transform = 'scale(1)';
               videoEl.style.filter = '';
+              // Apply speed ramping if present
+              videoEl.playbackRate = currentSegment.speedMultiplier || 1.0;
               if (isPlaying) videoEl.play().catch(() => {});
             }
 

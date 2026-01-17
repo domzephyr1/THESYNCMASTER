@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { AppStep, BeatMarker, VideoClip, EnhancedSyncSegment } from './types';
+import { AppStep, BeatMarker, VideoClip, EnhancedSyncSegment, StylePreset } from './types';
 import { audioService } from './services/audioAnalysis';
 import { videoAnalysisService } from './services/videoAnalysis';
 import { renderService } from './services/renderService';
 import { segmentationService } from './services/segmentationService';
+import { STYLE_PRESETS, getPresetList } from './services/presetService';
+import { sceneDetectionService, SceneMarker } from './services/sceneDetectionService';
 import FileUpload from './components/FileUpload';
 import Timeline from './components/Timeline';
 import Player from './components/Player';
 import ClipManager from './components/ClipManager';
 import VideoTrimmer from './components/VideoTrimmer';
-import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers } from 'lucide-react';
+import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers, Gauge, Sparkles, Scissors } from 'lucide-react';
 
 // Helpers
 const formatTime = (time: number) => {
@@ -33,10 +35,14 @@ function App() {
   // Sync Logic State (Lifted Up)
   const [segments, setSegments] = useState<EnhancedSyncSegment[]>([]);
   const [estimatedBpm, setEstimatedBpm] = useState(0);
+  const [syncScore, setSyncScore] = useState(0);
 
   // Analysis Settings
   const [minEnergy, setMinEnergy] = useState(0.1);
   const [peakSensitivity, setPeakSensitivity] = useState(1.8);
+  const [enableSpeedRamping, setEnableSpeedRamping] = useState(false);
+  const [enableSmartReorder, setEnableSmartReorder] = useState(false);
+  const [currentPreset, setCurrentPreset] = useState<string>('musicVideo');
   
   // Playback State
   const [currentTime, setCurrentTime] = useState(0);
@@ -53,6 +59,10 @@ function App() {
   // Modals
   const [showExportModal, setShowExportModal] = useState(false);
   const [trimmingClip, setTrimmingClip] = useState<VideoClip | null>(null);
+
+  // Scene Detection State
+  const [clipScenes, setClipScenes] = useState<Record<string, SceneMarker[]>>({});
+  const [detectingScenes, setDetectingScenes] = useState<string | null>(null);
 
   // Track Object URLs for cleanup to prevent memory leaks
   const urlsToRevoke = useRef<string[]>([]);
@@ -136,24 +146,87 @@ function App() {
   };
 
   const handleTrimUpdate = (id: string, start: number, end: number) => {
-     setVideoFiles(prev => prev.map(c => 
+     setVideoFiles(prev => prev.map(c =>
        c.id === id ? { ...c, trimStart: start, trimEnd: end } : c
      ));
+  };
+
+  // Detect scenes in a clip (for long clips)
+  const detectScenesForClip = async (clipId: string, clipUrl: string) => {
+    setDetectingScenes(clipId);
+    try {
+      const result = await sceneDetectionService.detectScenes(clipUrl);
+      setClipScenes(prev => ({ ...prev, [clipId]: result.scenes }));
+    } catch (e) {
+      console.warn('Scene detection failed:', e);
+    } finally {
+      setDetectingScenes(null);
+    }
+  };
+
+  // Auto-split a clip at scene boundaries
+  const handleAutoSplitClip = async (clipId: string) => {
+    const clip = videoFiles.find(c => c.id === clipId);
+    const scenes = clipScenes[clipId];
+
+    if (!clip || !scenes || scenes.length < 2) return;
+
+    // Generate sub-clips from scene boundaries
+    const ranges = sceneDetectionService.generateSubClipRanges(scenes, clip.duration);
+
+    // Create new clips for each scene
+    const newClips: VideoClip[] = ranges.map((range, index) => ({
+      id: `${clipId}_scene_${index}`,
+      file: clip.file,
+      url: clip.url,
+      duration: clip.duration,
+      name: `${clip.name.replace(/\.[^/.]+$/, '')} (Scene ${index + 1})`,
+      trimStart: range.start,
+      trimEnd: range.end,
+      metadata: clip.metadata
+    }));
+
+    // Replace original clip with split clips
+    setVideoFiles(prev => {
+      const index = prev.findIndex(c => c.id === clipId);
+      if (index === -1) return prev;
+
+      const updated = [...prev];
+      updated.splice(index, 1, ...newClips);
+      return updated;
+    });
+
+    // Clean up scene data for original clip
+    setClipScenes(prev => {
+      const updated = { ...prev };
+      delete updated[clipId];
+      return updated;
+    });
   };
 
   // --- Core Sync Logic ---
   useEffect(() => {
     if (beats.length > 0 && videoFiles.length > 0 && duration > 0) {
-        const result = segmentationService.generateMontage(beats, videoFiles, duration);
+        const result = segmentationService.generateMontage(beats, videoFiles, duration, {
+          enableSpeedRamping,
+          enableSmartReorder,
+          preset: STYLE_PRESETS[currentPreset]
+        });
         setSegments(result.segments);
         setEstimatedBpm(result.bpm);
+        setSyncScore(result.averageScore);
     }
-  }, [beats, videoFiles, duration]);
+  }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset]);
 
   const handleShuffle = () => {
      if (beats.length > 0 && videoFiles.length > 0 && duration > 0) {
-        const result = segmentationService.generateMontage(beats, videoFiles, duration);
+        const result = segmentationService.generateMontage(beats, videoFiles, duration, {
+          enableSpeedRamping,
+          enableSmartReorder,
+          preset: STYLE_PRESETS[currentPreset]
+        });
         setSegments(result.segments);
+        setSyncScore(result.averageScore);
     }
   };
 
@@ -233,17 +306,14 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minEnergy, peakSensitivity, step]);
 
-  // Presets
-  const applyPreset = (type: 'gentle' | 'balanced' | 'aggressive') => {
-      if (type === 'gentle') {
-          setMinEnergy(0.3);
-          setPeakSensitivity(2.5);
-      } else if (type === 'balanced') {
-          setMinEnergy(0.1);
-          setPeakSensitivity(1.8);
-      } else {
-          setMinEnergy(0.05);
-          setPeakSensitivity(1.2);
+  // Apply style preset
+  const applyPreset = (presetId: string) => {
+      const preset = STYLE_PRESETS[presetId];
+      if (preset) {
+          setMinEnergy(preset.minEnergy);
+          setPeakSensitivity(preset.sensitivity);
+          setEnableSpeedRamping(preset.speedRamping);
+          setCurrentPreset(presetId);
       }
   };
 
@@ -251,6 +321,31 @@ function App() {
     if (isRecording) return;
     setSeekSignal(time);
     setCurrentTime(time);
+  };
+
+  // Beat Snap Preview: Play 2-second preview around the beat
+  const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const handleBeatPreview = (beatTime: number) => {
+    if (isRecording) return;
+
+    // Clear any existing preview timeout
+    if (previewTimeoutRef.current) {
+      clearTimeout(previewTimeoutRef.current);
+    }
+
+    // Seek to 0.5s before the beat
+    const previewStart = Math.max(0, beatTime - 0.5);
+    setSeekSignal(previewStart);
+    setCurrentTime(previewStart);
+
+    // Start playing
+    setIsPlaying(true);
+
+    // Stop after 2 seconds
+    previewTimeoutRef.current = setTimeout(() => {
+      setIsPlaying(false);
+      previewTimeoutRef.current = null;
+    }, 2000);
   };
 
   const startRecordingFlow = () => {
@@ -329,9 +424,21 @@ function App() {
           SYNC<span className="text-cyan-400">MASTER</span>
         </h1>
         {step === AppStep.PREVIEW && estimatedBpm > 0 && (
-             <div className="hidden sm:flex ml-6 px-3 py-1 bg-slate-800/50 rounded-full items-center text-xs text-slate-300 font-mono border border-slate-700 animate-fade-in">
-                 <MusicIcon className="w-3 h-3 mr-2 text-yellow-400" />
-                 {estimatedBpm} BPM
+             <div className="hidden sm:flex ml-6 gap-3">
+                 <div className="px-3 py-1 bg-slate-800/50 rounded-full flex items-center text-xs text-slate-300 font-mono border border-slate-700 animate-fade-in">
+                     <MusicIcon className="w-3 h-3 mr-2 text-yellow-400" />
+                     {estimatedBpm} BPM
+                 </div>
+                 {syncScore > 0 && (
+                     <div className={`px-3 py-1 rounded-full flex items-center text-xs font-mono border animate-fade-in ${
+                       syncScore >= 80 ? 'bg-green-500/20 border-green-500/50 text-green-400' :
+                       syncScore >= 60 ? 'bg-yellow-500/20 border-yellow-500/50 text-yellow-400' :
+                       'bg-red-500/20 border-red-500/50 text-red-400'
+                     }`}>
+                         <Gauge className="w-3 h-3 mr-2" />
+                         Sync: {syncScore}%
+                     </div>
+                 )}
              </div>
         )}
       </div>
@@ -386,11 +493,15 @@ function App() {
             {/* Video List Manager */}
             {videoFiles.length > 0 && (
               <div className="mt-8">
-                 <ClipManager 
+                 <ClipManager
                    clips={videoFiles}
                    onReorder={handleReorderClips}
                    onRemove={handleRemoveClip}
                    onTrim={setTrimmingClip}
+                   clipScenes={clipScenes}
+                   detectingScenes={detectingScenes}
+                   onDetectScenes={detectScenesForClip}
+                   onAutoSplit={handleAutoSplitClip}
                  />
               </div>
             )}
@@ -450,13 +561,14 @@ function App() {
                   <span>{formatTime(currentTime)}</span>
                   <span>{formatTime(duration)}</span>
                </div>
-               <Timeline 
-                 waveformData={waveformData} 
-                 beats={beats} 
-                 duration={duration} 
+               <Timeline
+                 waveformData={waveformData}
+                 beats={beats}
+                 duration={duration}
                  currentTime={currentTime}
                  onSeek={handleSeek}
                  onBeatToggle={handleBeatToggle}
+                 onBeatPreview={handleBeatPreview}
                />
                <div className="flex justify-between items-center text-xs text-slate-500">
                   <div className="flex items-center">
@@ -476,15 +588,20 @@ function App() {
                    <Sliders className="w-4 h-4 text-cyan-400 mr-2" />
                    <h3 className="text-sm font-bold text-slate-300 uppercase">Sync Fine-Tuning</h3>
                 </div>
-                {/* Presets */}
-                <div className="flex space-x-2">
-                    {['gentle', 'balanced', 'aggressive'].map((p) => (
+                {/* Style Presets */}
+                <div className="flex flex-wrap gap-1">
+                    {getPresetList().slice(0, 4).map((preset) => (
                         <button
-                          key={p}
-                          onClick={() => applyPreset(p as any)}
-                          className="px-2 py-1 text-[10px] uppercase font-bold text-slate-400 border border-slate-700 rounded hover:text-white hover:border-cyan-500 transition-colors"
+                          key={preset.id}
+                          onClick={() => applyPreset(preset.id)}
+                          title={preset.description}
+                          className={`px-2 py-1 text-[10px] uppercase font-bold rounded transition-colors ${
+                            currentPreset === preset.id
+                              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500'
+                              : 'text-slate-400 border border-slate-700 hover:text-white hover:border-cyan-500'
+                          }`}
                         >
-                          {p}
+                          {preset.name}
                         </button>
                     ))}
                 </div>
@@ -512,16 +629,47 @@ function App() {
                        <label>Dynamic Sensitivity</label>
                        <span>{peakSensitivity.toFixed(1)}x</span>
                     </div>
-                    <input 
-                      type="range" 
-                      min="1.0" 
-                      max="4.0" 
+                    <input
+                      type="range"
+                      min="1.0"
+                      max="4.0"
                       step="0.1"
                       value={peakSensitivity}
                       onChange={(e) => setPeakSensitivity(parseFloat(e.target.value))}
                       className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-yellow-500"
                     />
                  </div>
+              </div>
+
+              {/* Feature Toggles */}
+              <div className="flex flex-wrap gap-4 mt-4 pt-4 border-t border-slate-800">
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={enableSpeedRamping}
+                    onChange={(e) => setEnableSpeedRamping(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900"
+                  />
+                  <span className="text-xs text-slate-400 group-hover:text-white transition-colors flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-yellow-400" />
+                    Speed Ramping
+                  </span>
+                  <span className="text-[10px] text-slate-600">(slow-mo on quiet, speed up on drops)</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={enableSmartReorder}
+                    onChange={(e) => setEnableSmartReorder(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900"
+                  />
+                  <span className="text-xs text-slate-400 group-hover:text-white transition-colors flex items-center gap-1">
+                    <Layers className="w-3 h-3 text-cyan-400" />
+                    Smart Clip Flow
+                  </span>
+                  <span className="text-[10px] text-slate-600">(smoother visual transitions)</span>
+                </label>
               </div>
 
               <div className="flex justify-end mt-4 items-center space-x-2">
@@ -541,13 +689,17 @@ function App() {
 
             <div className={`pt-8 border-t border-slate-800 transition-opacity ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
                <h3 className="text-sm font-bold text-slate-500 mb-4">SEQUENCER (EDIT MODE)</h3>
-               <ClipManager 
+               <ClipManager
                   clips={videoFiles}
                   segments={segments}
                   onReorder={handleReorderClips}
                   onRemove={handleRemoveClip}
                   onTrim={setTrimmingClip}
                   onShuffle={handleShuffle}
+                  clipScenes={clipScenes}
+                  detectingScenes={detectingScenes}
+                  onDetectScenes={detectScenesForClip}
+                  onAutoSplit={handleAutoSplitClip}
                />
             </div>
 

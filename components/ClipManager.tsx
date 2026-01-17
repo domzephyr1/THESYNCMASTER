@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { VideoClip, EnhancedSyncSegment } from '../types';
-import { Trash2, Scissors, GripVertical, Film, Shuffle, Sun, Contrast } from 'lucide-react';
+import { SceneMarker } from '../services/sceneDetectionService';
+import { Trash2, Scissors, GripVertical, Film, Shuffle, Sun, Contrast, SplitSquareHorizontal, Loader2, Scan } from 'lucide-react';
 
 interface ClipManagerProps {
   clips: VideoClip[];
@@ -9,15 +10,24 @@ interface ClipManagerProps {
   onRemove: (id: string) => void;
   onTrim: (clip: VideoClip) => void;
   onShuffle?: () => void;
+  // Scene detection props
+  clipScenes?: Record<string, SceneMarker[]>;
+  detectingScenes?: string | null;
+  onDetectScenes?: (clipId: string, clipUrl: string) => void;
+  onAutoSplit?: (clipId: string) => void;
 }
 
-const ClipManager: React.FC<ClipManagerProps> = ({ 
-  clips, 
+const ClipManager: React.FC<ClipManagerProps> = ({
+  clips,
   segments = [],
-  onReorder, 
-  onRemove, 
+  onReorder,
+  onRemove,
   onTrim,
-  onShuffle
+  onShuffle,
+  clipScenes = {},
+  detectingScenes,
+  onDetectScenes,
+  onAutoSplit
 }) => {
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
@@ -93,27 +103,57 @@ const ClipManager: React.FC<ClipManagerProps> = ({
                     <p className="text-sm font-semibold text-slate-200 truncate pr-2" title={clip.name}>
                       {clip.name}
                     </p>
-                    <div className="flex items-center space-x-2 mt-1">
+                    <div className="flex items-center space-x-2 mt-1 flex-wrap gap-1">
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${usageColor}`}>
                             {usage === 0 ? 'Unused' : `${usage}x Used`}
                         </span>
+                        {clipScenes[clip.id]?.length > 1 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-900/50 text-yellow-300 border border-yellow-800">
+                            {clipScenes[clip.id].length} scenes
+                          </span>
+                        )}
                         <p className="text-xs text-slate-500 font-mono">
-                        {clip.trimEnd > 0 
-                          ? `${(clip.trimEnd - clip.trimStart).toFixed(1)}s` 
+                        {clip.trimEnd > 0
+                          ? `${(clip.trimEnd - clip.trimStart).toFixed(1)}s`
                           : '...'}
                         </p>
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button 
+                  {/* Scene Detection for long clips (>15s) */}
+                  {clip.duration > 15 && onDetectScenes && !clipScenes[clip.id] && (
+                    <button
+                      onClick={() => onDetectScenes(clip.id, clip.url)}
+                      disabled={detectingScenes === clip.id}
+                      className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-yellow-400 transition-colors disabled:opacity-50"
+                      title="Detect Scenes"
+                    >
+                      {detectingScenes === clip.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Scan className="w-4 h-4" />
+                      )}
+                    </button>
+                  )}
+                  {/* Auto-split button when scenes detected */}
+                  {clipScenes[clip.id]?.length > 1 && onAutoSplit && (
+                    <button
+                      onClick={() => onAutoSplit(clip.id)}
+                      className="p-1.5 rounded-md hover:bg-slate-800 text-yellow-400 hover:text-yellow-300 transition-colors"
+                      title={`Split into ${clipScenes[clip.id].length} scenes`}
+                    >
+                      <SplitSquareHorizontal className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button
                     onClick={() => onTrim(clip)}
                     className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-cyan-400 transition-colors"
                     title="Trim Clip"
                   >
                     <Scissors className="w-4 h-4" />
                   </button>
-                  <button 
+                  <button
                     onClick={() => onRemove(clip.id)}
                     className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-red-400 transition-colors"
                     title="Remove Clip"

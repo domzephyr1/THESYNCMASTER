@@ -9,16 +9,18 @@ interface TimelineProps {
   className?: string;
   onSeek?: (time: number) => void;
   onBeatToggle?: (time: number) => void;
+  onBeatPreview?: (beatTime: number) => void;
 }
 
-const Timeline: React.FC<TimelineProps> = ({ 
-  waveformData, 
-  beats, 
-  duration, 
-  currentTime, 
+const Timeline: React.FC<TimelineProps> = ({
+  waveformData,
+  beats,
+  duration,
+  currentTime,
   className = "",
   onSeek,
-  onBeatToggle
+  onBeatToggle,
+  onBeatPreview
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -107,6 +109,21 @@ const Timeline: React.FC<TimelineProps> = ({
   // Handle Playhead separation to keep animation smooth
   // We overlay a div for the playhead instead of redrawing canvas every frame
   
+  // Find nearest beat to a time (within threshold)
+  const findNearestBeat = (time: number, threshold: number = 0.3): BeatMarker | null => {
+    let nearest: BeatMarker | null = null;
+    let minDistance = threshold;
+
+    for (const beat of beats) {
+      const distance = Math.abs(beat.time - time);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearest = beat;
+      }
+    }
+    return nearest;
+  };
+
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -117,6 +134,15 @@ const Timeline: React.FC<TimelineProps> = ({
     // Shift + Click to Toggle Beat
     if (e.shiftKey && onBeatToggle) {
         onBeatToggle(time);
+        return;
+    }
+
+    // Alt + Click to Preview Beat (find nearest beat)
+    if (e.altKey && onBeatPreview) {
+        const nearestBeat = findNearestBeat(time);
+        if (nearestBeat) {
+            onBeatPreview(nearestBeat.time);
+        }
         return;
     }
 
@@ -134,7 +160,7 @@ const Timeline: React.FC<TimelineProps> = ({
         ref={containerRef}
         className={`relative h-24 w-full bg-slate-900 rounded-lg overflow-hidden border border-slate-700 cursor-pointer group ${className}`}
         onClick={handleClick}
-        title="Click to Seek. Shift+Click to Add/Remove Beat."
+        title="Click to Seek. Shift+Click to Add/Remove Beat. Alt+Click to Preview Beat."
       >
         <canvas 
           ref={canvasRef} 
@@ -153,7 +179,7 @@ const Timeline: React.FC<TimelineProps> = ({
       </div>
       <div className="flex justify-between px-1 text-[10px] text-slate-500 font-mono">
          <span>0:00</span>
-         <span className="text-slate-600">SHIFT + CLICK to Edit Beats</span>
+         <span className="text-slate-600">SHIFT+CLICK Edit | ALT+CLICK Preview</span>
          <span>END</span>
       </div>
     </div>

@@ -32,6 +32,21 @@ export interface SyncSegment {
 
 export interface EnhancedSyncSegment extends SyncSegment {
   filter: 'none' | 'bw' | 'contrast' | 'cyber';
+  clipScore?: number; // 0-100 match score for beat-clip pairing
+  speedMultiplier?: number; // 0.5 = half speed, 2.0 = double speed
+}
+
+// Style Presets for one-click editing styles
+export interface StylePreset {
+  id: string;
+  name: string;
+  description: string;
+  minEnergy: number;
+  sensitivity: number;
+  speedRamping: boolean;
+  filterPreference: 'none' | 'cinematic' | 'vibrant' | 'bw';
+  transitionStyle: 'fast' | 'smooth' | 'mixed';
+  minSegmentDuration: number;
 }
 
 export interface VideoClip {

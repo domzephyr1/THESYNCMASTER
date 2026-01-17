@@ -1,21 +1,110 @@
-import { BeatMarker, EnhancedSyncSegment, TransitionType, VideoClip } from '../types';
+import { BeatMarker, EnhancedSyncSegment, TransitionType, VideoClip, StylePreset } from '../types';
 
 // Pre-roll: cut slightly BEFORE beat for perceived sync (humans anticipate)
 const PRE_ROLL_SECONDS = 0.03; // 30ms
 
+export interface MontageOptions {
+  enableSpeedRamping?: boolean;
+  enableSmartReorder?: boolean;
+  preset?: StylePreset;
+}
+
 export class SegmentationService {
+
+  // Calculate how well a clip matches a beat (0-100 score)
+  private scoreClipForBeat(clip: VideoClip, beat: BeatMarker): number {
+    let score = 50; // Base score
+    const meta = clip.metadata;
+
+    if (!meta?.processed) {
+      // No metadata - return neutral score with small random variance
+      return 50 + Math.random() * 10;
+    }
+
+    // High intensity beats prefer high motion/contrast clips
+    if (beat.intensity > 0.7) {
+      if (meta.motion > 0.5) score += 20;
+      if (meta.contrast > 0.5) score += 15;
+      if (meta.visualInterest > 0.6) score += 15;
+    }
+    // Medium intensity beats - balanced preference
+    else if (beat.intensity > 0.4) {
+      if (meta.motion > 0.3 && meta.motion < 0.7) score += 15;
+      if (meta.visualInterest > 0.4) score += 10;
+    }
+    // Low intensity beats prefer calmer clips
+    else {
+      if (meta.motion < 0.4) score += 15;
+      if (meta.brightness > 0.3 && meta.brightness < 0.7) score += 10;
+      if (meta.contrast < 0.5) score += 5;
+    }
+
+    // Visual interest always adds value
+    if (meta.visualInterest) {
+      score += meta.visualInterest * 10;
+    }
+
+    return Math.min(100, Math.max(0, score));
+  }
+
+  // Calculate speed multiplier based on beat energy
+  private calculateSpeedMultiplier(beatIntensity: number, segmentDuration: number): number {
+    // Low energy (0-0.3) -> slow mo (0.5-0.7x)
+    // Medium energy (0.3-0.7) -> normal (1.0x)
+    // High energy (0.7-1.0) -> speed up (1.2-1.5x)
+
+    if (beatIntensity < 0.3) {
+      // Slow mo for quiet/buildup sections
+      // Only apply to segments long enough to notice
+      if (segmentDuration > 1.5) {
+        return 0.5 + (beatIntensity * 0.67); // 0.5 to 0.7
+      }
+      return 1.0;
+    } else if (beatIntensity > 0.7) {
+      // Speed up for high energy drops
+      return 1.0 + ((beatIntensity - 0.7) * 1.67); // 1.0 to 1.5
+    }
+
+    return 1.0; // Normal speed for medium energy
+  }
+
+  // Calculate visual similarity between two clips (0-1)
+  private clipSimilarity(clipA: VideoClip, clipB: VideoClip): number {
+    const metaA = clipA.metadata;
+    const metaB = clipB.metadata;
+
+    // If either clip lacks metadata, return neutral similarity
+    if (!metaA?.processed || !metaB?.processed) {
+      return 0.5;
+    }
+
+    // Calculate similarity based on visual properties
+    const brightnessDiff = Math.abs(metaA.brightness - metaB.brightness);
+    const contrastDiff = Math.abs(metaA.contrast - metaB.contrast);
+    const motionDiff = Math.abs(metaA.motion - metaB.motion);
+
+    // Convert differences to similarity (1 = identical, 0 = completely different)
+    const brightnessSim = 1 - brightnessDiff;
+    const contrastSim = 1 - contrastDiff;
+    const motionSim = 1 - motionDiff;
+
+    // Weighted average - motion is most noticeable to viewers
+    return (brightnessSim * 0.25) + (contrastSim * 0.25) + (motionSim * 0.5);
+  }
 
   generateMontage(
     beats: BeatMarker[],
     videoClips: VideoClip[],
-    duration: number
-  ): { segments: EnhancedSyncSegment[], bpm: number } {
+    duration: number,
+    options: MontageOptions = {}
+  ): { segments: EnhancedSyncSegment[], bpm: number, averageScore: number } {
+    const { enableSpeedRamping = false, enableSmartReorder = false, preset } = options;
 
     console.log(`🎬 generateMontage: ${beats.length} beats, ${videoClips.length} clips, ${duration.toFixed(1)}s`);
 
     if (!beats.length || !videoClips.length || duration === 0) {
       console.warn('⚠️ generateMontage returning empty - missing data');
-      return { segments: [], bpm: 0 };
+      return { segments: [], bpm: 0, averageScore: 0 };
     }
 
     // Filter to only clips with valid duration (trimEnd > trimStart)
@@ -33,7 +122,7 @@ export class SegmentationService {
 
     if (validClipIndices.length === 0) {
       console.error('❌ No valid clips available! All clips have trimEnd <= trimStart');
-      return { segments: [], bpm: 0 };
+      return { segments: [], bpm: 0, averageScore: 0 };
     }
 
     // --- BPM Calculation ---
@@ -166,6 +255,28 @@ export class SegmentationService {
           score += meta.visualInterest * 15;
         }
 
+        // Smart Reorder: prefer clips with moderate similarity to previous
+        // (not too similar = boring, not too different = jarring)
+        if (enableSmartReorder && lastVideoIndex >= 0 && lastVideoIndex < videoClips.length) {
+          const prevClip = videoClips[lastVideoIndex];
+          const similarity = this.clipSimilarity(clip, prevClip);
+
+          // Sweet spot: 0.3-0.7 similarity gets bonus
+          // Too similar (>0.8) or too different (<0.2) gets penalty
+          if (similarity >= 0.3 && similarity <= 0.7) {
+            score += 25; // Goldilocks zone bonus
+          } else if (similarity > 0.85) {
+            score -= 15; // Too similar - boring
+          } else if (similarity < 0.15) {
+            score -= 10; // Too different - jarring
+          }
+
+          // On high energy beats, allow more variety
+          if (currentBeat.intensity > 0.8) {
+            score += 10; // Override similarity preference for impact
+          }
+        }
+
         // Never pick exact same as previous (unless only 1 valid clip)
         if (i === lastVideoIndex && allIndices.length > 1) {
           score -= 200;
@@ -228,6 +339,14 @@ export class SegmentationService {
         filter = Math.random() > 0.7 ? 'bw' : 'none';
       }
 
+      // Calculate clip score for this beat-clip pairing
+      const clipScore = this.scoreClipForBeat(clip, currentBeat);
+
+      // Calculate speed multiplier if enabled
+      const speedMultiplier = enableSpeedRamping
+        ? this.calculateSpeedMultiplier(currentBeat.intensity, segmentDuration)
+        : 1.0;
+
       newSegments.push({
         startTime,
         endTime,
@@ -236,18 +355,24 @@ export class SegmentationService {
         clipStartTime,
         filter,
         transition,
-        prevVideoIndex: lastVideoIndex
+        prevVideoIndex: lastVideoIndex,
+        clipScore,
+        speedMultiplier
       });
 
       lastVideoIndex = videoIndex;
       startTime = endTime;
     }
 
+    // Calculate average clip score
+    const totalScore = newSegments.reduce((sum, seg) => sum + (seg.clipScore || 50), 0);
+    const averageScore = newSegments.length > 0 ? Math.round(totalScore / newSegments.length) : 0;
+
     // Log final summary
     const uniqueClips = new Set(newSegments.map(s => s.videoIndex)).size;
-    console.log(`✅ Montage: ${newSegments.length} segments, ${uniqueClips} clips used, ${estimatedBpm} BPM`);
+    console.log(`✅ Montage: ${newSegments.length} segments, ${uniqueClips} clips used, ${estimatedBpm} BPM, Sync Score: ${averageScore}%`);
 
-    return { segments: newSegments, bpm: estimatedBpm };
+    return { segments: newSegments, bpm: estimatedBpm, averageScore };
   }
 }
 
