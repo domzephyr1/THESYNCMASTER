@@ -36,16 +36,10 @@ const Timeline: React.FC<TimelineProps> = ({
     const height = canvas.height;
 
     // DEBUG: Log beat rendering data
-    console.log('🎯 Timeline Render Debug:', {
-      beatsCount: beats.length,
-      duration: duration,
-      width: width,
-      hasWaveform: waveformData.length > 0,
-      firstFewBeats: beats.slice(0, 3).map(b => ({
-        time: b?.time?.toFixed?.(2) ?? 'undefined',
-        intensity: b?.intensity?.toFixed?.(2) ?? 'undefined'
-      }))
-    });
+    console.log('🎯 TIMELINE DEBUG:', `beatsCount=${beats.length}, duration=${(duration || 0).toFixed(2)}, width=${width}, hasWaveform=${waveformData.length > 0}`);
+    if (beats.length > 0) {
+      console.log('🎯 FIRST 3 BEATS:', beats.slice(0, 3).map(b => `time=${(b?.time || 0).toFixed(2)}, intensity=${(b?.intensity || 0).toFixed(2)}`).join(' | '));
+    }
 
     // Clear
     ctx.clearRect(0, 0, width, height);
@@ -81,11 +75,7 @@ const Timeline: React.FC<TimelineProps> = ({
     if (beats.length > 0) {
       const effectiveDuration = duration > 0 ? duration : 1;
 
-      console.log('🎯 Drawing beats:', {
-        effectiveDuration: effectiveDuration.toFixed(2),
-        beatsToDraw: beats.length,
-        canvasSize: `${width}x${height}`
-      });
+      console.log('🎯 DRAWING BEATS:', `effectiveDuration=${effectiveDuration.toFixed(2)}, beatsToDraw=${beats.length}, canvasSize=${width}x${height}`);
 
       // Draw beat markers with GLOW effect for visibility
       ctx.save();

@@ -388,13 +388,15 @@ export class SegmentationService {
     let score = 50; // Base score
 
     // Motion match bonus
-    if (clip.metadata?.motionEnergy) {
+    if (clip.metadata?.motionEnergy !== undefined && !isNaN(clip.metadata.motionEnergy)) {
       const motionMatch = 1 - Math.abs(clip.metadata.motionEnergy - beat.intensity);
-      score += motionMatch * 30;
+      if (!isNaN(motionMatch)) {
+        score += motionMatch * 30;
+      }
     }
 
     // Drop + high motion = excellent
-    if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.6) {
+    if (inDrop && clip.metadata?.motionEnergy !== undefined && !isNaN(clip.metadata.motionEnergy) && clip.metadata.motionEnergy > 0.6) {
       score += 15;
     }
 

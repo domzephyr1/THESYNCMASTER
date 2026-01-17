@@ -292,6 +292,8 @@ function App() {
       setBeats(detectedBeats);
       setPhraseData(detectedPhraseData);
 
+      console.log('🎵 BEATS DETECTED:', `count=${detectedBeats.length}, firstBeat=${detectedBeats[0]?.time?.toFixed(2) ?? 'none'}`);
+
       const wave = audioService.getWaveformData(buffer, 300);
       setWaveformData(wave);
 
