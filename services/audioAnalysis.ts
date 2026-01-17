@@ -196,33 +196,36 @@ export class AudioAnalyzerService {
   }
 
   private identifyHeroMoments(beats: BeatMarker[], drops: DropZone[]): BeatMarker[] {
-    const heroTimes = new Set<number>();
+    const heroIndices = new Set<number>();
 
-    // Add drop peaks
+    // Add drop peaks by index
     drops.forEach(drop => {
-      const closestBeat = beats.reduce((prev, curr) =>
-        Math.abs(curr.time - drop.peakTime) < Math.abs(prev.time - drop.peakTime) ? curr : prev
-      );
-      heroTimes.add(closestBeat.time);
+      const closestIndex = beats.reduce((prevIdx, curr, currIdx) => {
+        const prevDist = Math.abs(beats[prevIdx].time - drop.peakTime);
+        const currDist = Math.abs(curr.time - drop.peakTime);
+        return currDist < prevDist ? currIdx : prevIdx;
+      }, 0);
+      heroIndices.add(closestIndex);
     });
 
-    // Add phrase boundary downbeats
-    beats.forEach(beat => {
+    // Add phrase boundary downbeats by index
+    beats.forEach((beat, idx) => {
       if (beat.isDownbeat && beat.phrasePosition === 1) {
-        heroTimes.add(beat.time);
+        heroIndices.add(idx);
       }
     });
 
-    // Add top 5% intensity beats
-    const sortedByIntensity = [...beats].sort((a, b) => b.intensity - a.intensity);
+    // Add top 5% intensity beats by index
+    const sortedByIntensity = beats.map((beat, idx) => ({ beat, idx }))
+      .sort((a, b) => b.beat.intensity - a.beat.intensity);
     const top5Percent = Math.max(3, Math.floor(beats.length * 0.05));
-    sortedByIntensity.slice(0, top5Percent).forEach(beat => heroTimes.add(beat.time));
+    sortedByIntensity.slice(0, top5Percent).forEach(item => heroIndices.add(item.idx));
 
-    console.log(`🦸 Hero moments: ${heroTimes.size} from drops(${drops.length}), phrase boundaries, and top ${top5Percent} intensity`);
+    console.log(`🦸 Hero moments: ${heroIndices.size} from drops(${drops.length}), phrase boundaries, and top ${top5Percent} intensity`);
 
-    return beats.map(beat => ({
+    return beats.map((beat, idx) => ({
       ...beat,
-      isHeroMoment: heroTimes.has(beat.time)
+      isHeroMoment: heroIndices.has(idx)
     }));
   }
 
