@@ -289,6 +289,7 @@ function App() {
       await new Promise(resolve => setTimeout(resolve, 500));
 
       const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(buffer, minEnergy, peakSensitivity);
+      console.log('🎵 BEFORE SET STATE:', `detectedBeats length=${detectedBeats.length}, first time=${detectedBeats[0]?.time}, isNaN=${isNaN(detectedBeats[0]?.time)}`);
       setBeats(detectedBeats);
       setPhraseData(detectedPhraseData);
 

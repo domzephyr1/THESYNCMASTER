@@ -73,6 +73,7 @@ export class AudioAnalyzerService {
 
     // 1. Get raw beats
     const rawBeats = await this.detectBeats(buffer, minEnergy, sensitivity);
+    console.log(`🎵 Raw beats: ${rawBeats.length}, first time: ${rawBeats[0]?.time}, isNaN: ${isNaN(rawBeats[0]?.time)}`);
 
     // 2. Analyze energy envelope for drop detection
     const energyEnvelope = this.getEnergyEnvelope(buffer);
@@ -84,9 +85,11 @@ export class AudioAnalyzerService {
 
     // 4. Assign phrase positions to beats
     const enhancedBeats = this.assignPhrasePositions(rawBeats, barDuration, drops);
+    console.log(`🎵 Enhanced beats: ${enhancedBeats.length}, first time: ${enhancedBeats[0]?.time}, isNaN: ${isNaN(enhancedBeats[0]?.time)}`);
 
     // 5. Identify hero moments
     const finalBeats = this.identifyHeroMoments(enhancedBeats, drops);
+    console.log(`🎵 Final beats: ${finalBeats.length}, first time: ${finalBeats[0]?.time}, isNaN: ${isNaN(finalBeats[0]?.time)}`);
 
     const phraseData: PhraseData = {
       barDuration,
@@ -252,10 +255,13 @@ export class AudioAnalyzerService {
 
         if (ticks.length > 0) {
           console.log(`Essentia found ${ticks.length} beats with ${confidence} confidence.`);
-          return ticks.map((time: number) => ({
+          console.log(`🎵 First 3 ticks: ${ticks.slice(0, 3).map(t => t.toFixed(3)).join(', ')}`);
+          const beatMarkers = ticks.map((time: number) => ({
             time,
             intensity: 0.8
           }));
+          console.log(`🎵 First beat marker: time=${beatMarkers[0]?.time}, isNaN=${isNaN(beatMarkers[0]?.time)}`);
+          return beatMarkers;
         }
       } catch (e) {
         console.warn("Essentia analysis failed, falling back to Multi-Band", e);
