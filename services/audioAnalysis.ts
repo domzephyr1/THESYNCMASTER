@@ -256,10 +256,15 @@ export class AudioAnalyzerService {
         if (ticks.length > 0) {
           console.log(`Essentia found ${ticks.length} beats with ${confidence} confidence.`);
           console.log(`🎵 First 3 ticks: ${ticks.slice(0, 3).map(t => t.toFixed(3)).join(', ')}`);
-          const beatMarkers = ticks.map((time: number) => ({
-            time,
-            intensity: 0.8
-          }));
+          const beatMarkers = ticks.map((time: number) => {
+            console.log(`🎵 Mapping time: ${time}, type: ${typeof time}, isNaN: ${isNaN(time)}`);
+            const marker = {
+              time,
+              intensity: 0.8
+            };
+            console.log(`🎵 Created marker: time=${marker.time}, intensity=${marker.intensity}`);
+            return marker;
+          });
           console.log(`🎵 First beat marker: time=${beatMarkers[0]?.time}, isNaN=${isNaN(beatMarkers[0]?.time)}`);
           return beatMarkers;
         }
