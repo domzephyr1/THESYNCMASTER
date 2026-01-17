@@ -35,6 +35,15 @@ const Timeline: React.FC<TimelineProps> = ({
     const width = canvas.width;
     const height = canvas.height;
 
+    // DEBUG: Log beat rendering data
+    console.log('🎯 Timeline Render Debug:', {
+      beatsCount: beats.length,
+      duration: duration,
+      width: width,
+      hasWaveform: waveformData.length > 0,
+      firstFewBeats: beats.slice(0, 3).map(b => ({ time: b.time.toFixed(2), intensity: b.intensity.toFixed(2) }))
+    });
+
     // Clear
     ctx.clearRect(0, 0, width, height);
 
@@ -68,6 +77,12 @@ const Timeline: React.FC<TimelineProps> = ({
     // Draw Beats - ALWAYS ON TOP with high visibility
     if (beats.length > 0) {
       const effectiveDuration = duration > 0 ? duration : 1;
+
+      console.log('🎯 Drawing beats:', {
+        effectiveDuration: effectiveDuration.toFixed(2),
+        beatsToDraw: beats.length,
+        canvasSize: `${width}x${height}`
+      });
 
       // Draw beat markers with GLOW effect for visibility
       ctx.save();

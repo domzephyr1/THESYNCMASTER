@@ -586,7 +586,7 @@ function App() {
         {step === AppStep.PREVIEW && (
           <div className="space-y-6 animate-fade-in-up">
             
-            <Player 
+            <Player
               audioUrl={audioUrl}
               videoClips={videoFiles}
               beats={beats}
@@ -601,20 +601,34 @@ function App() {
               onRecordingComplete={handleRecordingComplete}
             />
 
+            {/* DEBUG: Player Data Check */}
+            {process.env.NODE_ENV === 'development' && (
+              <div className="text-xs text-slate-500 font-mono bg-slate-900 p-2 rounded border border-slate-700 mt-4">
+                DEBUG: Player Data - Segments: {segments.length}, Clips: {videoFiles.length}, Playing: {isPlaying}, Time: {currentTime.toFixed(2)}/{duration.toFixed(2)}
+              </div>
+            )}
+
             <div className={`space-y-2 transition-opacity ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
                <div className="flex justify-between text-xs font-mono text-slate-400">
                   <span>{formatTime(currentTime)}</span>
                   <span>{formatTime(duration)}</span>
                </div>
-               <Timeline
-                 waveformData={waveformData}
-                 beats={beats}
-                 duration={duration}
-                 currentTime={currentTime}
-                 onSeek={handleSeek}
-                 onBeatToggle={handleBeatToggle}
-                 onBeatPreview={handleBeatPreview}
-               />
+              <Timeline
+                waveformData={waveformData}
+                beats={beats}
+                duration={duration}
+                currentTime={currentTime}
+                onSeek={handleSeek}
+                onBeatToggle={handleBeatToggle}
+                onBeatPreview={handleBeatPreview}
+              />
+
+              {/* DEBUG: Timeline Data Check */}
+              {process.env.NODE_ENV === 'development' && (
+                <div className="text-xs text-slate-500 font-mono bg-slate-900 p-2 rounded border border-slate-700 mt-2">
+                  DEBUG: Timeline Data - Beats: {beats.length}, Duration: {duration.toFixed(2)}, Waveform: {waveformData.length} samples
+                </div>
+              )}
                <div className="flex justify-between items-center text-xs text-slate-500">
                   <div className="flex items-center">
                     <div className="w-3 h-3 bg-yellow-500 rounded-full mr-2"></div>

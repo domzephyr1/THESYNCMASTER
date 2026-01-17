@@ -143,6 +143,9 @@ const Player: React.FC<PlayerProps> = ({
     }
   }, [isRecording]);
 
+  // Track play promise to prevent race conditions
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+
   // 3. Playback Loop (Visual Engine)
   useEffect(() => {
     const audio = audioRef.current;
@@ -173,6 +176,15 @@ const Player: React.FC<PlayerProps> = ({
           // --- CUT EVENT ---
           if (currentSegment.videoIndex !== activeClipIndex) {
             const newClipIndex = currentSegment.videoIndex;
+
+            console.log('🎬 CUT EVENT:', {
+              time: currentTime.toFixed(2),
+              fromClip: activeClipIndex,
+              toClip: newClipIndex,
+              segmentStart: currentSegment.startTime.toFixed(2),
+              timeInSegment: timeInSegment.toFixed(2),
+              wasPreloaded: preloadedClipIndexRef.current === newClipIndex
+            });
 
             // Update refs (no re-render)
             prevClipRef.current = activeClipIndex;
@@ -239,6 +251,21 @@ const Player: React.FC<PlayerProps> = ({
                  const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
                  const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
 
+                 // DEBUG: Log sync issues
+                 if (drift > 0.01) { // Log even small drifts
+                   console.log('⚡ Video Sync:', {
+                     time: currentTime.toFixed(2),
+                     clipIndex: activeClipIndex,
+                     currentVideoTime: activeVideo.currentTime.toFixed(3),
+                     targetVideoTime: targetVideoTime.toFixed(3),
+                     drift: drift.toFixed(3),
+                     willSeek: drift > 0.15,
+                     readyState: activeVideo.readyState,
+                     paused: activeVideo.paused,
+                     isPlaying: isPlaying
+                   });
+                 }
+
                  // Handle Looping if segment is longer than clip source
                  const sourceDuration = clipData.trimEnd - clipData.trimStart;
                  let loopAdjustedTime = targetVideoTime;
@@ -293,8 +320,8 @@ const Player: React.FC<PlayerProps> = ({
                      }
                  }
 
-                 // Apply CSS
-                 activeVideo.style.transform = `scale(${scale}) translateX(${translateX}px)`;
+                 // Apply CSS - use translate3d for GPU acceleration
+                 activeVideo.style.transform = `scale(${scale}) translate3d(${translateX}px, 0, 0)`;
                  activeVideo.style.opacity = opacity.toString();
                  activeVideo.style.zIndex = '10';
                  
@@ -317,6 +344,21 @@ const Player: React.FC<PlayerProps> = ({
              if (currentSegmentIndex >= 0 && currentSegmentIndex < segments.length - 1) {
                const nextSegment = segments[currentSegmentIndex + 1];
                const timeUntilNextCut = nextSegment.startTime - currentTime;
+
+               // DEBUG: Log preloading decisions
+               if (timeUntilNextCut < 1.0) { // Log when approaching cuts
+                 console.log('🔮 Preload Check:', {
+                   time: currentTime.toFixed(2),
+                   nextCutIn: timeUntilNextCut.toFixed(2),
+                   nextClipIndex: nextSegment.videoIndex,
+                   currentlyPreloading: preloadingRef.current,
+                   alreadyPreloaded: preloadedClipIndexRef.current === nextSegment.videoIndex,
+                   willStartPreload: timeUntilNextCut < 0.5 && timeUntilNextCut > 0 &&
+                     nextSegment.videoIndex !== preloadedClipIndexRef.current &&
+                     nextSegment.videoIndex !== activeClipIndex &&
+                     !preloadingRef.current
+                 });
+               }
 
                // Start preloading 500ms before cut
                if (timeUntilNextCut < 0.5 && timeUntilNextCut > 0) {
@@ -409,7 +451,7 @@ const Player: React.FC<PlayerProps> = ({
     };
 
     if (isPlaying) {
-      audio.play().catch(e => console.error("Audio play failed", e));
+      playPromiseRef.current = audio.play().catch(e => console.error("Audio play failed", e));
       const currentVideo = videoRefs.current[activeClipRef.current];
       if (currentVideo) {
         currentVideo.style.opacity = '1';
@@ -417,7 +459,18 @@ const Player: React.FC<PlayerProps> = ({
       }
       requestRef.current = requestAnimationFrame(animate);
     } else {
-      audio.pause();
+      // Wait for any pending play promise before pausing
+      if (playPromiseRef.current) {
+        playPromiseRef.current.then(() => {
+          audio.pause();
+        }).catch(() => {
+          // Play was already interrupted, safe to pause
+          audio.pause();
+        });
+        playPromiseRef.current = null;
+      } else {
+        audio.pause();
+      }
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
       videoRefs.current.forEach(v => v && v.pause());
     }
@@ -495,7 +548,8 @@ const Player: React.FC<PlayerProps> = ({
             style={{
                 opacity: (segments.length > 0 && idx === segments[0].videoIndex) ? 1 : 0,
                 zIndex: (segments.length > 0 && idx === segments[0].videoIndex) ? 10 : 0,
-                transition: 'none' // No CSS transitions - we control via JS
+                transition: 'none', // No CSS transitions - we control via JS
+                willChange: 'transform, opacity, filter' // Hint to browser for GPU acceleration
             }}
             muted
             playsInline
