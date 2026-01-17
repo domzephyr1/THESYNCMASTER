@@ -85,6 +85,19 @@ const Player: React.FC<PlayerProps> = ({
     }
   }, [segments, videoClips]);
 
+  // Cleanup video elements on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      videoRefs.current.forEach(video => {
+        if (video) {
+          video.pause();
+          video.src = '';
+          video.load();
+        }
+      });
+    };
+  }, []);
+
   // 2. Recording Logic
   useEffect(() => {
     if (isRecording) {

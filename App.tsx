@@ -76,10 +76,16 @@ function App() {
   // Track Object URLs for cleanup to prevent memory leaks
   const urlsToRevoke = useRef<string[]>([]);
 
-  // Cleanup URLs on unmount
+  // Cleanup URLs and timers on unmount
   useEffect(() => {
     return () => {
       urlsToRevoke.current.forEach(url => URL.revokeObjectURL(url));
+      if (previewTimeoutRef.current) {
+        clearTimeout(previewTimeoutRef.current);
+      }
+      if (autoResyncTimerRef.current) {
+        clearTimeout(autoResyncTimerRef.current);
+      }
     };
   }, []);
 
@@ -151,6 +157,15 @@ function App() {
   };
 
   const handleRemoveClip = (id: string) => {
+    // Revoke URL to free memory
+    const clipToRemove = videoFiles.find(c => c.id === id);
+    if (clipToRemove?.url) {
+      URL.revokeObjectURL(clipToRemove.url);
+      const urlIndex = urlsToRevoke.current.indexOf(clipToRemove.url);
+      if (urlIndex > -1) {
+        urlsToRevoke.current.splice(urlIndex, 1);
+      }
+    }
     setVideoFiles(prev => prev.filter(c => c.id !== id));
   };
 
@@ -286,11 +301,18 @@ function App() {
     }
   };
 
-  const handleReSync = async () => {
+  const handleReSync = useCallback(async () => {
     if (!audioBuffer) {
         console.warn("handleReSync: No audioBuffer available");
         return;
     }
+
+    // Cancel any pending auto re-sync to prevent race condition
+    if (autoResyncTimerRef.current) {
+      clearTimeout(autoResyncTimerRef.current);
+      autoResyncTimerRef.current = null;
+    }
+
     console.log("🔄 Re-analyzing beats...", { minEnergy, peakSensitivity });
     setIsAnalyzing(true);
     try {
@@ -304,18 +326,22 @@ function App() {
     } finally {
         setIsAnalyzing(false);
     }
-  };
+  }, [audioBuffer, minEnergy, peakSensitivity]);
 
   // Debounced Auto Re-Sync
   useEffect(() => {
     if (step === AppStep.PREVIEW && audioBuffer && !isAnalyzing) {
-        const timer = setTimeout(() => {
+        autoResyncTimerRef.current = setTimeout(() => {
             handleReSync();
         }, 600);
-        return () => clearTimeout(timer);
+        return () => {
+          if (autoResyncTimerRef.current) {
+            clearTimeout(autoResyncTimerRef.current);
+            autoResyncTimerRef.current = null;
+          }
+        };
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [minEnergy, peakSensitivity, step]);
+  }, [minEnergy, peakSensitivity, step, audioBuffer, isAnalyzing, handleReSync]);
 
   // Apply style preset
   const applyPreset = (presetId: string) => {
@@ -333,6 +359,9 @@ function App() {
     setSeekSignal(time);
     setCurrentTime(time);
   };
+
+  // Track auto re-sync timer to prevent race conditions
+  const autoResyncTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Beat Snap Preview: Play 2-second preview around the beat
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
