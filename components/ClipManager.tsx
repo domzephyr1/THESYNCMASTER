@@ -10,6 +10,7 @@ interface ClipManagerProps {
   onRemove: (id: string) => void;
   onTrim: (clip: VideoClip) => void;
   onShuffle?: () => void;
+  onToggleHero?: (id: string) => void;
   // Scene detection props
   clipScenes?: Record<string, SceneMarker[]>;
   detectingScenes?: string | null;
@@ -24,6 +25,7 @@ const ClipManager: React.FC<ClipManagerProps> = ({
   onRemove,
   onTrim,
   onShuffle,
+  onToggleHero,
   clipScenes = {},
   detectingScenes,
   onDetectScenes,

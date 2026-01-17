@@ -1,4 +1,4 @@
-import { BeatMarker } from '../types';
+import { BeatMarker, DropZone, PhraseData } from '../types';
 
 declare var EssentiaWASM: any;
 declare var Essentia: any;
@@ -7,76 +7,34 @@ export class AudioAnalyzerService {
   private audioContext: AudioContext;
   private essentia: any = null;
 
-  // Cache raw Essentia beats to avoid re-running 50s analysis
-  private cachedRawBeats: BeatMarker[] | null = null;
-  private cachedAudioDuration: number = 0;
-
   constructor() {
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
   }
 
-  // Calculate energy envelope for the entire track (for speed ramping)
-  getEnergyEnvelope(buffer: AudioBuffer, windowCount: number = 100): number[] {
-    const rawData = buffer.getChannelData(0);
-    const windowSize = Math.floor(rawData.length / windowCount);
-    const envelope: number[] = [];
-
-    for (let i = 0; i < windowCount; i++) {
-      const start = i * windowSize;
-      let sum = 0;
-      for (let j = 0; j < windowSize && start + j < rawData.length; j++) {
-        sum += rawData[start + j] * rawData[start + j];
-      }
-      envelope.push(Math.sqrt(sum / windowSize));
-    }
-
-    // Normalize
-    const max = Math.max(...envelope);
-    return envelope.map(v => v / max);
-  }
-
-  // Get energy at a specific time
-  private getEnergyAtTime(buffer: AudioBuffer, time: number, windowMs: number = 100): number {
-    const sampleRate = buffer.sampleRate;
-    const rawData = buffer.getChannelData(0);
-    const centerSample = Math.floor(time * sampleRate);
-    const windowSamples = Math.floor((windowMs / 1000) * sampleRate);
-    const start = Math.max(0, centerSample - windowSamples / 2);
-    const end = Math.min(rawData.length, centerSample + windowSamples / 2);
-
-    let sum = 0;
-    for (let i = start; i < end; i++) {
-      sum += rawData[i] * rawData[i];
-    }
-    return Math.sqrt(sum / (end - start));
-  }
-
   private async initEssentia() {
-    const maxRetries = 10; // Reduced from 20 for faster fallback
+    const maxRetries = 20;
     let attempts = 0;
 
     return new Promise<void>((resolve) => {
-        const check = async () => {
-            if (typeof EssentiaWASM !== 'undefined' && typeof Essentia !== 'undefined') {
-                try {
-                    // EssentiaWASM is a function that returns a promise
-                    const wasmModule = await EssentiaWASM();
-                    this.essentia = new Essentia(wasmModule);
-                    console.log("✅ Essentia.js initialized");
-                    resolve();
-                } catch (e) {
-                    console.warn("⚠️ Essentia init error:", e);
-                    resolve(); // Resolve anyway to fallback
-                }
-            } else if (attempts < maxRetries) {
-                attempts++;
-                setTimeout(check, 100);
-            } else {
-                console.warn("⚠️ Essentia timeout - using fallback detection");
-                resolve();
-            }
-        };
-        check();
+      const check = () => {
+        if (typeof EssentiaWASM !== 'undefined' && typeof Essentia !== 'undefined') {
+          try {
+            this.essentia = new Essentia(EssentiaWASM);
+            console.log("✅ Essentia.js Initialized");
+            resolve();
+          } catch (e) {
+            console.warn("Essentia init error", e);
+            resolve();
+          }
+        } else if (attempts < maxRetries) {
+          attempts++;
+          setTimeout(check, 100);
+        } else {
+          console.warn("Essentia timed out");
+          resolve();
+        }
+      };
+      check();
     });
   }
 
@@ -86,7 +44,7 @@ export class AudioAnalyzerService {
   }
 
   getWaveformData(buffer: AudioBuffer, samples: number = 200): number[] {
-    const rawData = buffer.getChannelData(0); // Use first channel
+    const rawData = buffer.getChannelData(0);
     const blockSize = Math.floor(rawData.length / samples);
     const waveform = [];
 
@@ -99,113 +57,207 @@ export class AudioAnalyzerService {
       waveform.push(sum / blockSize);
     }
 
-    // Normalize
     const max = Math.max(...waveform);
     return waveform.map(val => val / max);
   }
 
-  // Post-process beats based on user settings (minEnergy and sensitivity)
-  // Goal: Reduce 400+ raw beats to 30-100 usable cut points for video editing
-  private postProcessBeats(rawBeats: BeatMarker[], minEnergy: number, sensitivity: number): BeatMarker[] {
-    if (rawBeats.length === 0) return [];
+  // ============ ENHANCED BEAT DETECTION ============
 
-    // minEnergy controls minimum interval between beats
-    // Higher minEnergy = longer intervals = fewer cuts
-    // Range: 0.5s (minEnergy=0.01) to 4s (minEnergy=0.8)
-    const minInterval = 0.5 + (minEnergy * 4);
+  async detectBeatsEnhanced(
+    buffer: AudioBuffer,
+    minEnergy: number = 0.1,
+    sensitivity: number = 1.5
+  ): Promise<{ beats: BeatMarker[], phraseData: PhraseData }> {
 
-    // sensitivity controls the target beat density
-    // Higher sensitivity = more beats kept
-    // Range: keep every 8th beat (sens=1.0) to every 2nd beat (sens=4.0)
-    const skipFactor = Math.max(1, Math.round(9 - sensitivity * 2));
+    // 1. Get raw beats
+    const rawBeats = await this.detectBeats(buffer, minEnergy, sensitivity);
 
-    const filteredBeats: BeatMarker[] = [];
-    let lastBeatTime = -minInterval;
-    let beatCounter = 0;
+    // 2. Analyze energy envelope for drop detection
+    const energyEnvelope = this.getEnergyEnvelope(buffer);
+    const drops = this.detectDrops(energyEnvelope, buffer.duration);
 
-    for (const beat of rawBeats) {
-      // Must be at least minInterval apart
-      if (beat.time - lastBeatTime >= minInterval) {
-        beatCounter++;
-        // Only keep every Nth beat based on sensitivity
-        if (beatCounter % skipFactor === 0 || beat.intensity > 0.9) {
-          filteredBeats.push(beat);
-          lastBeatTime = beat.time;
+    // 3. Estimate BPM and bar structure
+    const bpm = this.estimateBPM(rawBeats);
+    const barDuration = (60 / bpm) * 4;
+
+    // 4. Assign phrase positions to beats
+    const enhancedBeats = this.assignPhrasePositions(rawBeats, barDuration, drops);
+
+    // 5. Identify hero moments
+    const finalBeats = this.identifyHeroMoments(enhancedBeats, drops);
+
+    const phraseData: PhraseData = {
+      barDuration,
+      phraseBars: 8,
+      downbeats: finalBeats.filter(b => b.isDownbeat).map(b => b.time),
+      drops
+    };
+
+    console.log(`🎵 Enhanced analysis: ${finalBeats.length} beats, ${drops.length} drops, ${finalBeats.filter(b => b.isHeroMoment).length} heroes`);
+
+    return { beats: finalBeats, phraseData };
+  }
+
+  private getEnergyEnvelope(buffer: AudioBuffer, windowMs: number = 50): number[] {
+    const rawData = buffer.getChannelData(0);
+    const sampleRate = buffer.sampleRate;
+    const windowSamples = Math.floor(sampleRate * (windowMs / 1000));
+    const envelope: number[] = [];
+
+    for (let i = 0; i < rawData.length; i += windowSamples) {
+      let sum = 0;
+      for (let j = 0; j < windowSamples && i + j < rawData.length; j++) {
+        sum += rawData[i + j] * rawData[i + j];
+      }
+      envelope.push(Math.sqrt(sum / windowSamples));
+    }
+
+    const max = Math.max(...envelope);
+    return envelope.map(v => v / max);
+  }
+
+  private detectDrops(envelope: number[], duration: number): DropZone[] {
+    const drops: DropZone[] = [];
+    const windowSize = 20;
+    const dropThreshold = 0.4;
+
+    const timePerSample = duration / envelope.length;
+
+    for (let i = windowSize; i < envelope.length - windowSize; i++) {
+      const beforeEnergy = envelope.slice(i - windowSize, i).reduce((a, b) => a + b, 0) / windowSize;
+      const dropEnergy = envelope[i];
+      const afterEnergy = envelope.slice(i, i + windowSize).reduce((a, b) => a + b, 0) / windowSize;
+
+      if (beforeEnergy < 0.4 && dropEnergy > beforeEnergy + dropThreshold && afterEnergy > 0.5) {
+        const peakTime = i * timePerSample;
+
+        const lastDrop = drops[drops.length - 1];
+        if (!lastDrop || peakTime - lastDrop.peakTime > 4) {
+          drops.push({
+            startTime: Math.max(0, peakTime - 2),
+            peakTime: peakTime,
+            endTime: Math.min(duration, peakTime + 4),
+            intensity: dropEnergy
+          });
         }
       }
     }
 
-    console.log(`🎚️ Beat filter: ${rawBeats.length} → ${filteredBeats.length} (interval=${minInterval.toFixed(1)}s, skip=${skipFactor})`);
-    return filteredBeats;
+    console.log(`🔥 Detected ${drops.length} drops`);
+    return drops;
   }
 
-  async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {
-    console.log(`🎵 Beat detection: ${buffer.duration.toFixed(1)}s audio`);
+  private estimateBPM(beats: BeatMarker[]): number {
+    if (beats.length < 4) return 120;
 
-    // Check if we have cached raw beats for this audio (same duration = same audio)
-    if (this.cachedRawBeats && Math.abs(this.cachedAudioDuration - buffer.duration) < 0.1) {
-      console.log("⚡ Using cached Essentia beats (instant re-filter)");
-      return this.postProcessBeats(this.cachedRawBeats, minEnergy, sensitivity);
+    const intervals: number[] = [];
+    for (let i = 1; i < beats.length; i++) {
+      intervals.push(beats[i].time - beats[i - 1].time);
     }
 
-    // 1. Try Essentia AI Detection First (with timeout)
-    let essentiaBeats: BeatMarker[] | null = null;
+    intervals.sort((a, b) => a - b);
+    const median = intervals[Math.floor(intervals.length / 2)];
 
-    try {
-      if (!this.essentia) {
-        await Promise.race([
-          this.initEssentia(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Essentia load timeout')), 3000)
-          )
-        ]);
+    const filtered = intervals.filter(i => Math.abs(i - median) < median * 0.3);
+    const avgInterval = filtered.reduce((a, b) => a + b, 0) / filtered.length;
+
+    let bpm = 60 / avgInterval;
+
+    while (bpm < 80) bpm *= 2;
+    while (bpm > 180) bpm /= 2;
+
+    return Math.round(bpm);
+  }
+
+  private assignPhrasePositions(beats: BeatMarker[], barDuration: number, drops: DropZone[]): BeatMarker[] {
+    const beatDuration = barDuration / 4;
+
+    return beats.map((beat) => {
+      const beatsFromStart = beat.time / beatDuration;
+      const barPosition = (Math.round(beatsFromStart) % 4) + 1;
+
+      const phraseBeats = 32;
+      const phrasePosition = (Math.round(beatsFromStart) % phraseBeats) + 1;
+
+      const isDownbeat = barPosition === 1;
+      const isDrop = drops.some(d => beat.time >= d.startTime && beat.time <= d.endTime);
+
+      return {
+        ...beat,
+        barPosition,
+        phrasePosition,
+        isDownbeat,
+        isDrop
+      };
+    });
+  }
+
+  private identifyHeroMoments(beats: BeatMarker[], drops: DropZone[]): BeatMarker[] {
+    const heroTimes = new Set<number>();
+
+    // Add drop peaks
+    drops.forEach(drop => {
+      const closestBeat = beats.reduce((prev, curr) =>
+        Math.abs(curr.time - drop.peakTime) < Math.abs(prev.time - drop.peakTime) ? curr : prev
+      );
+      heroTimes.add(closestBeat.time);
+    });
+
+    // Add phrase boundary downbeats
+    beats.forEach(beat => {
+      if (beat.isDownbeat && beat.phrasePosition === 1) {
+        heroTimes.add(beat.time);
       }
+    });
 
-      if (this.essentia) {
+    // Add top 5% intensity beats
+    const sortedByIntensity = [...beats].sort((a, b) => b.intensity - a.intensity);
+    const top5Percent = Math.max(3, Math.floor(beats.length * 0.05));
+    sortedByIntensity.slice(0, top5Percent).forEach(beat => heroTimes.add(beat.time));
+
+    return beats.map(beat => ({
+      ...beat,
+      isHeroMoment: heroTimes.has(beat.time)
+    }));
+  }
+
+  // ============ ORIGINAL BEAT DETECTION ============
+
+  async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {
+    if (!this.essentia) {
+      await this.initEssentia();
+    }
+
+    if (this.essentia) {
+      try {
+        console.log("Running Essentia RhythmExtractor2013...");
         const channelData = buffer.getChannelData(0);
         const vectorSignal = this.essentia.arrayToVector(channelData);
         const rhythm = this.essentia.RhythmExtractor2013(vectorSignal);
-
         const ticks = this.essentia.vectorToArray(rhythm.ticks);
         const confidence = rhythm.confidence;
-        const bpm = rhythm.bpm;
 
-        // Cleanup memory (important for WASM)
-        if(vectorSignal.delete) vectorSignal.delete();
+        if (vectorSignal.delete) vectorSignal.delete();
 
-        if (ticks.length > 5) { // Need at least 5 beats to be valid
-          // CRITICAL: Convert Float32Array to regular Array before mapping to objects
-          essentiaBeats = Array.from(ticks).map((time: number) => ({
+        if (ticks.length > 0) {
+          console.log(`Essentia found ${ticks.length} beats with ${confidence} confidence.`);
+          return ticks.map((time: number) => ({
             time,
-            intensity: Math.min(0.9, confidence || 0.8)
+            intensity: 0.8
           }));
-          console.log(`✅ Essentia: ${essentiaBeats.length} beats at ${bpm?.toFixed(0) || '?'} BPM`);
         }
+      } catch (e) {
+        console.warn("Essentia analysis failed, falling back to Multi-Band", e);
       }
-    } catch (e) {
-      console.warn("Essentia unavailable, using fallback");
     }
 
-    // Return Essentia beats if we got them (with post-processing based on user settings)
-    if (essentiaBeats && essentiaBeats.length > 0) {
-      // Cache raw beats for instant re-filtering
-      this.cachedRawBeats = essentiaBeats;
-      this.cachedAudioDuration = buffer.duration;
-      return this.postProcessBeats(essentiaBeats, minEnergy, sensitivity);
-    }
-
-    // 2. Fallback to Multi-Band Detection
-    console.log("🎛️ Using multi-band fallback detection");
-
+    console.log("Using Multi-Band Frequency Analysis");
     const lowPeaks = await this.analyzeBand(buffer, 'lowpass', 250, 1.2, minEnergy, sensitivity);
     const midPeaks = await this.analyzeBand(buffer, 'bandpass', 1200, 1.0, minEnergy, sensitivity);
     const highPeaks = await this.analyzeBand(buffer, 'highpass', 4000, 0.8, minEnergy, sensitivity * 1.2);
 
     const allPeaks = [...lowPeaks, ...midPeaks, ...highPeaks].sort((a, b) => a.time - b.time);
-    const merged = this.mergeBeats(allPeaks, 0.15);
-
-    console.log(`✅ Multi-band: ${merged.length} beats detected`);
-    return merged;
+    return this.mergeBeats(allPeaks, 0.15);
   }
 
   private async analyzeBand(
@@ -216,23 +268,23 @@ export class AudioAnalyzerService {
     minEnergy: number,
     sensitivity: number
   ): Promise<BeatMarker[]> {
-      const offlineCtx = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
-      const source = offlineCtx.createBufferSource();
-      source.buffer = buffer;
+    const offlineCtx = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = buffer;
 
-      const filter = offlineCtx.createBiquadFilter();
-      filter.type = type;
-      filter.frequency.value = freq;
-      filter.Q.value = 1.0;
+    const filter = offlineCtx.createBiquadFilter();
+    filter.type = type;
+    filter.frequency.value = freq;
+    filter.Q.value = 1.0;
 
-      source.connect(filter);
-      filter.connect(offlineCtx.destination);
-      source.start();
+    source.connect(filter);
+    filter.connect(offlineCtx.destination);
+    source.start();
 
-      const renderedBuffer = await offlineCtx.startRendering();
-      const peaks = this.findPeaks(renderedBuffer, minEnergy, sensitivity);
+    const renderedBuffer = await offlineCtx.startRendering();
+    const peaks = this.findPeaks(renderedBuffer, minEnergy, sensitivity);
 
-      return peaks.map(p => ({ ...p, intensity: p.intensity * weight }));
+    return peaks.map(p => ({ ...p, intensity: p.intensity * weight }));
   }
 
   private findPeaks(buffer: AudioBuffer, minEnergy: number, sensitivity: number): BeatMarker[] {
@@ -246,7 +298,7 @@ export class AudioAnalyzerService {
     const historySize = Math.floor(1.0 / windowSize);
     const energyHistory: number[] = new Array(historySize).fill(0);
 
-    const minBeatInterval = 0.25;
+    const minBeatInterval = 0.12; // Reduced for faster cuts
     let lastBeatTime = -minBeatInterval;
 
     for (let i = 0; i < rawData.length; i += samplesPerWindow) {
@@ -285,21 +337,21 @@ export class AudioAnalyzerService {
     let currentGroup: BeatMarker[] = [beats[0]];
 
     for (let i = 1; i < beats.length; i++) {
-        const beat = beats[i];
-        const prevGroupBeat = currentGroup[0];
+      const beat = beats[i];
+      const prevGroupBeat = currentGroup[0];
 
-        if (beat.time - prevGroupBeat.time < window) {
-            currentGroup.push(beat);
-        } else {
-            const best = currentGroup.reduce((p, c) => (p.intensity > c.intensity ? p : c));
-            merged.push(best);
-            currentGroup = [beat];
-        }
+      if (beat.time - prevGroupBeat.time < window) {
+        currentGroup.push(beat);
+      } else {
+        const best = currentGroup.reduce((p, c) => (p.intensity > c.intensity ? p : c));
+        merged.push(best);
+        currentGroup = [beat];
+      }
     }
 
     if (currentGroup.length > 0) {
-        const best = currentGroup.reduce((p, c) => (p.intensity > c.intensity ? p : c));
-        merged.push(best);
+      const best = currentGroup.reduce((p, c) => (p.intensity > c.intensity ? p : c));
+      merged.push(best);
     }
 
     return merged;

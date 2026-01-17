@@ -1,41 +1,69 @@
 import { ClipMetadata } from '../types';
 
-// Inline worker code for analyzing pixel data
-// This avoids needing a separate file build process for the worker
 const workerCode = `
 self.onmessage = function(e) {
   const { data, width, height, prevData } = e.data;
   let sum = 0;
+  let motionSum = 0;
+  let horizontalMotion = 0;
+  let verticalMotion = 0;
 
   // Calculate Average Brightness
   for (let i = 0; i < data.length; i += 4) {
-      const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
-      sum += luminance;
+    const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+    sum += luminance;
   }
   const avgBrightness = sum / (data.length / 4);
 
   // Calculate Variance (Contrast proxy)
   let sumDiffSq = 0;
   for (let i = 0; i < data.length; i += 4) {
-      const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
-      const diff = luminance - avgBrightness;
-      sumDiffSq += diff * diff;
+    const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+    const diff = luminance - avgBrightness;
+    sumDiffSq += diff * diff;
   }
   const variance = sumDiffSq / (data.length / 4);
 
-  // Calculate Motion (difference from previous frame)
-  let motion = 0;
-  if (prevData && prevData.length === data.length) {
-    let diffSum = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      const currLum = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
-      const prevLum = (0.299 * prevData[i] + 0.587 * prevData[i + 1] + 0.114 * prevData[i + 2]) / 255;
-      diffSum += Math.abs(currLum - prevLum);
+  // Calculate Motion (if previous frame provided)
+  if (prevData) {
+    const gridSize = 16;
+    const cellWidth = width / gridSize;
+    const cellHeight = height / gridSize;
+
+    for (let gy = 0; gy < gridSize; gy++) {
+      for (let gx = 0; gx < gridSize; gx++) {
+        let cellDiff = 0;
+        const startX = Math.floor(gx * cellWidth);
+        const startY = Math.floor(gy * cellHeight);
+
+        for (let y = startY; y < startY + cellHeight && y < height; y++) {
+          for (let x = startX; x < startX + cellWidth && x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const lum1 = (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]);
+            const lum2 = (0.299 * prevData[idx] + 0.587 * prevData[idx + 1] + 0.114 * prevData[idx + 2]);
+            cellDiff += Math.abs(lum1 - lum2);
+          }
+        }
+
+        const normalizedDiff = cellDiff / (cellWidth * cellHeight * 255);
+        motionSum += normalizedDiff;
+
+        if (gx < gridSize / 2) horizontalMotion -= normalizedDiff;
+        else horizontalMotion += normalizedDiff;
+
+        if (gy < gridSize / 2) verticalMotion -= normalizedDiff;
+        else verticalMotion += normalizedDiff;
+      }
     }
-    motion = diffSum / (data.length / 4);
   }
 
-  self.postMessage({ brightness: avgBrightness, variance, motion });
+  self.postMessage({
+    brightness: avgBrightness,
+    variance,
+    motion: motionSum,
+    horizontalBias: horizontalMotion,
+    verticalBias: verticalMotion
+  });
 };
 `;
 
@@ -44,13 +72,13 @@ export class VideoAnalysisService {
 
   constructor() {
     try {
-        const blob = new Blob([workerCode], { type: 'application/javascript' });
-        this.worker = new Worker(URL.createObjectURL(blob));
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      this.worker = new Worker(URL.createObjectURL(blob));
     } catch (e) {
-        console.warn("Worker creation failed, falling back to main thread", e);
+      console.warn("Worker creation failed, falling back to main thread", e);
     }
   }
-  
+
   async analyzeClip(videoUrl: string): Promise<ClipMetadata> {
     return new Promise((resolve) => {
       const video = document.createElement('video');
@@ -63,7 +91,7 @@ export class VideoAnalysisService {
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
       if (!ctx) {
-        resolve({ brightness: 0.5, contrast: 0.5, motion: 0.5, visualInterest: 0.5, processed: true });
+        resolve({ brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true });
         return;
       }
 
@@ -72,73 +100,89 @@ export class VideoAnalysisService {
         canvas.height = 90;
 
         try {
-          // Sample more frames for motion detection
-          const sampleCount = 6;
-          const samples = Array.from({ length: sampleCount }, (_, i) =>
-            ((i + 1) / (sampleCount + 1)) * video.duration
-          );
+          const sampleTimes = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].map(p => p * video.duration);
 
           let totalBrightness = 0;
           let totalVariance = 0;
           let totalMotion = 0;
+          let maxMotion = 0;
+          let maxMotionTime = 0;
+          let horizontalBias = 0;
+          let verticalBias = 0;
+
           let prevFrameData: Uint8ClampedArray | null = null;
 
-          for (const time of samples) {
-             video.currentTime = time;
-             // Wait for seek with timeout to prevent hanging
-             await new Promise<void>(r => {
-                 const timeout = setTimeout(() => {
-                     video.removeEventListener('seeked', onSeek);
-                     r(); // Resolve anyway after timeout
-                 }, 2000);
-                 const onSeek = () => {
-                     clearTimeout(timeout);
-                     video.removeEventListener('seeked', onSeek);
-                     r();
-                 };
-                 video.addEventListener('seeked', onSeek);
-             });
+          for (let i = 0; i < sampleTimes.length; i++) {
+            const time = sampleTimes[i];
+            video.currentTime = time;
 
-             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            await new Promise<void>(r => {
+              const onSeek = () => {
+                video.removeEventListener('seeked', onSeek);
+                r();
+              };
+              video.addEventListener('seeked', onSeek);
+            });
 
-             // Analyze with motion detection
-             const result = await this.analyzeFrame(ctx, canvas.width, canvas.height, prevFrameData);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const currentFrameData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 
-             totalBrightness += result.brightness;
-             totalVariance += result.variance;
-             totalMotion += result.motion;
+            const result = await this.analyzeFrame(
+              ctx,
+              canvas.width,
+              canvas.height,
+              prevFrameData
+            );
 
-             // Store current frame for next motion comparison
-             prevFrameData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            totalBrightness += result.brightness;
+            totalVariance += result.variance;
+
+            if (prevFrameData) {
+              totalMotion += result.motion;
+              horizontalBias += result.horizontalBias;
+              verticalBias += result.verticalBias;
+
+              if (result.motion > maxMotion) {
+                maxMotion = result.motion;
+                maxMotionTime = time;
+              }
+            }
+
+            prevFrameData = new Uint8ClampedArray(currentFrameData);
           }
 
-          const avgBrightness = totalBrightness / samples.length;
-          const avgContrast = Math.min(1, (totalVariance / samples.length) * 4);
-          const avgMotion = Math.min(1, (totalMotion / (samples.length - 1)) * 5); // Scale motion
+          const frameCount = sampleTimes.length;
+          const motionFrameCount = frameCount - 1;
 
-          // Calculate visual interest score (combination of factors)
-          const visualInterest = (
-            avgContrast * 0.3 +           // High contrast = interesting
-            avgMotion * 0.4 +             // Motion = engaging
-            (1 - Math.abs(avgBrightness - 0.5)) * 0.3  // Not too dark/bright
-          );
+          let dominantMotionDirection: 'static' | 'horizontal' | 'vertical' | 'chaotic' = 'static';
+          const avgMotion = totalMotion / motionFrameCount;
+
+          if (avgMotion > 0.1) {
+            const hBias = Math.abs(horizontalBias / motionFrameCount);
+            const vBias = Math.abs(verticalBias / motionFrameCount);
+
+            if (hBias > vBias * 1.5) dominantMotionDirection = 'horizontal';
+            else if (vBias > hBias * 1.5) dominantMotionDirection = 'vertical';
+            else if (avgMotion > 0.3) dominantMotionDirection = 'chaotic';
+          }
 
           resolve({
-             brightness: avgBrightness,
-             contrast: avgContrast,
-             motion: avgMotion,
-             visualInterest: Math.min(1, visualInterest),
-             processed: true
+            brightness: totalBrightness / frameCount,
+            contrast: Math.min(1, (totalVariance / frameCount) * 4),
+            motionEnergy: Math.min(1, avgMotion * 3),
+            dominantMotionDirection,
+            peakMotionTimestamp: maxMotionTime,
+            processed: true
           });
 
         } catch (e) {
-            console.warn("Video analysis failed", e);
-            resolve({ brightness: 0.5, contrast: 0.5, motion: 0.5, visualInterest: 0.5, processed: true });
+          console.warn("Video analysis failed", e);
+          resolve({ brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true });
         }
       };
 
       video.onerror = () => {
-         resolve({ brightness: 0.5, contrast: 0.5, motion: 0.5, visualInterest: 0.5, processed: true });
+        resolve({ brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true });
       };
     });
   }
@@ -147,57 +191,63 @@ export class VideoAnalysisService {
     ctx: CanvasRenderingContext2D,
     width: number,
     height: number,
-    prevFrameData: Uint8ClampedArray | null = null
-  ): Promise<{brightness: number, variance: number, motion: number}> {
-      const frame = ctx.getImageData(0, 0, width, height);
+    prevData: Uint8ClampedArray | null
+  ): Promise<{ brightness: number, variance: number, motion: number, horizontalBias: number, verticalBias: number }> {
+    const frame = ctx.getImageData(0, 0, width, height);
 
-      // Use Worker
-      if (this.worker) {
-          return new Promise((resolve) => {
-             const handler = (e: MessageEvent) => {
-                 this.worker?.removeEventListener('message', handler);
-                 resolve(e.data);
-             };
-             this.worker?.addEventListener('message', handler);
-             this.worker?.postMessage({
-                 data: frame.data,
-                 width,
-                 height,
-                 prevData: prevFrameData
-             }, [frame.data.buffer]); // Transferable
-          });
-      }
+    if (this.worker) {
+      return new Promise((resolve) => {
+        const handler = (e: MessageEvent) => {
+          this.worker?.removeEventListener('message', handler);
+          resolve(e.data);
+        };
+        this.worker?.addEventListener('message', handler);
 
-      // Fallback Main Thread
-      const data = frame.data;
-      let sum = 0;
-      for (let i = 0; i < data.length; i += 4) {
-          const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
-          sum += luminance;
-      }
-      const avgBrightness = sum / (data.length / 4);
+        const transferList: ArrayBuffer[] = [frame.data.buffer];
+        const message: any = { data: frame.data, width, height };
 
-      let sumDiffSq = 0;
-      for (let i = 0; i < data.length; i += 4) {
-          const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
-          const diff = luminance - avgBrightness;
-          sumDiffSq += diff * diff;
-      }
-      const variance = sumDiffSq / (data.length / 4);
-
-      // Calculate motion
-      let motion = 0;
-      if (prevFrameData && prevFrameData.length === data.length) {
-        let diffSum = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          const currLum = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
-          const prevLum = (0.299 * prevFrameData[i] + 0.587 * prevFrameData[i + 1] + 0.114 * prevFrameData[i + 2]) / 255;
-          diffSum += Math.abs(currLum - prevLum);
+        if (prevData) {
+          message.prevData = prevData;
         }
-        motion = diffSum / (data.length / 4);
-      }
 
-      return Promise.resolve({ brightness: avgBrightness, variance, motion });
+        this.worker?.postMessage(message, transferList);
+      });
+    }
+
+    // Fallback main thread
+    const data = frame.data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+      sum += luminance;
+    }
+    const avgBrightness = sum / (data.length / 4);
+
+    let sumDiffSq = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const luminance = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+      const diff = luminance - avgBrightness;
+      sumDiffSq += diff * diff;
+    }
+    const variance = sumDiffSq / (data.length / 4);
+
+    let motion = 0;
+    if (prevData) {
+      for (let i = 0; i < data.length; i += 16) {
+        const lum1 = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+        const lum2 = (0.299 * prevData[i] + 0.587 * prevData[i + 1] + 0.114 * prevData[i + 2]);
+        motion += Math.abs(lum1 - lum2) / 255;
+      }
+      motion = motion / (data.length / 16);
+    }
+
+    return Promise.resolve({
+      brightness: avgBrightness,
+      variance,
+      motion,
+      horizontalBias: 0,
+      verticalBias: 0
+    });
   }
 }
 
