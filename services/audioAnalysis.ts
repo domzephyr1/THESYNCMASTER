@@ -201,6 +201,7 @@ export class AudioAnalyzerService {
     // Add drop peaks by index
     drops.forEach(drop => {
       const closestIndex = beats.reduce((prevIdx, curr, currIdx) => {
+        if (!curr || !beats[prevIdx]) return prevIdx;
         const prevDist = Math.abs(beats[prevIdx].time - drop.peakTime);
         const currDist = Math.abs(curr.time - drop.peakTime);
         return currDist < prevDist ? currIdx : prevIdx;
@@ -210,13 +211,15 @@ export class AudioAnalyzerService {
 
     // Add phrase boundary downbeats by index
     beats.forEach((beat, idx) => {
-      if (beat.isDownbeat && beat.phrasePosition === 1) {
+      if (beat && beat.isDownbeat && beat.phrasePosition === 1) {
         heroIndices.add(idx);
       }
     });
 
     // Add top 5% intensity beats by index
-    const sortedByIntensity = beats.map((beat, idx) => ({ beat, idx }))
+    const sortedByIntensity = beats
+      .map((beat, idx) => ({ beat, idx }))
+      .filter(item => item.beat && typeof item.beat.intensity === 'number')
       .sort((a, b) => b.beat.intensity - a.beat.intensity);
     const top5Percent = Math.max(3, Math.floor(beats.length * 0.05));
     sortedByIntensity.slice(0, top5Percent).forEach(item => heroIndices.add(item.idx));
