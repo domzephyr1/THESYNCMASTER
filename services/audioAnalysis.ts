@@ -275,13 +275,20 @@ export class AudioAnalyzerService {
 
         if (ticks.length > 0) {
           console.log(`✅ Essentia found ${ticks.length} beats with ${confidence} confidence.`);
-          console.log(`🎵 RAW TICKS: [${ticks.slice(0, 5).map((t, i) => `${i}:${t}`).join(', ')}]`);
 
-          // Test individual tick access
-          console.log(`🎵 Tick[0] type: ${typeof ticks[0]}, value: ${ticks[0]}, isNaN: ${isNaN(ticks[0])}`);
-          console.log(`🎵 Tick[1] type: ${typeof ticks[1]}, value: ${ticks[1]}, isNaN: ${isNaN(ticks[1])}`);
+          // Debug: Check ticks object type and access methods
+          console.log(`🎵 TICKS OBJECT:`, Object.getOwnPropertyNames(ticks));
+          console.log(`🎵 TICKS[0]:`, ticks[0], `TICKS[1]:`, ticks[1]);
 
-          const beatMarkers = ticks.map((time: number, index: number) => {
+          // Convert Essentia vector to proper JavaScript array
+          const ticksArray: number[] = [];
+          for (let i = 0; i < ticks.length; i++) {
+            ticksArray.push(ticks[i]);
+          }
+
+          console.log(`🎵 CONVERTED ARRAY: [${ticksArray.slice(0, 5).map((t, i) => `${i}:${t.toFixed(3)}`).join(', ')}]`);
+
+          const beatMarkers = ticksArray.map((time: number, index: number) => {
             if (index < 3) { // Only log first 3 for brevity
               console.log(`🎵 MAP[${index}]: input time=${time}, type=${typeof time}, isNaN=${isNaN(time)}`);
             }
