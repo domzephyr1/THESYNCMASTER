@@ -16,10 +16,12 @@ export class AudioAnalyzerService {
     let attempts = 0;
 
     return new Promise<void>((resolve) => {
-      const check = () => {
+      const check = async () => {
         if (typeof EssentiaWASM !== 'undefined' && typeof Essentia !== 'undefined') {
           try {
-            this.essentia = new Essentia(EssentiaWASM);
+            // EssentiaWASM is a function that returns a promise
+            const wasmModule = await EssentiaWASM();
+            this.essentia = new Essentia(wasmModule);
             console.log("✅ Essentia.js Initialized");
             resolve();
           } catch (e) {

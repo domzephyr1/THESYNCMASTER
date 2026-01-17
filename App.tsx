@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { AppStep, BeatMarker, VideoClip, EnhancedSyncSegment, StylePreset } from './types';
+import { AppStep, BeatMarker, VideoClip, EnhancedSyncSegment, StylePreset, PhraseData } from './types';
 import { audioService } from './services/audioAnalysis';
 import { videoAnalysisService } from './services/videoAnalysis';
 import { renderService } from './services/renderService';
@@ -30,6 +30,7 @@ function App() {
   const [audioUrl, setAudioUrl] = useState<string>('');
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
   const [beats, setBeats] = useState<BeatMarker[]>([]);
+  const [phraseData, setPhraseData] = useState<PhraseData | null>(null);
   const [waveformData, setWaveformData] = useState<number[]>([]);
   
   // Sync Logic State (Lifted Up)
@@ -234,20 +235,22 @@ function App() {
         const result = segmentationService.generateMontage(beats, videoFiles, duration, {
           enableSpeedRamping,
           enableSmartReorder,
-          preset: STYLE_PRESETS[currentPreset]
+          preset: STYLE_PRESETS[currentPreset],
+          phraseData: phraseData || undefined
         });
         setSegments(result.segments);
         setEstimatedBpm(result.bpm);
         setSyncScore(result.averageScore);
     }
-  }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset]);
+  }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset, phraseData]);
 
   const handleShuffle = () => {
      if (beats.length > 0 && videoFiles.length > 0 && duration > 0) {
         const result = segmentationService.generateMontage(beats, videoFiles, duration, {
           enableSpeedRamping,
           enableSmartReorder,
-          preset: STYLE_PRESETS[currentPreset]
+          preset: STYLE_PRESETS[currentPreset],
+          phraseData: phraseData || undefined
         });
         setSegments(result.segments);
         setSyncScore(result.averageScore);
@@ -285,8 +288,9 @@ function App() {
 
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      const detectedBeats = await audioService.detectBeats(buffer, minEnergy, peakSensitivity);
+      const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(buffer, minEnergy, peakSensitivity);
       setBeats(detectedBeats);
+      setPhraseData(detectedPhraseData);
 
       const wave = audioService.getWaveformData(buffer, 300);
       setWaveformData(wave);
@@ -316,9 +320,10 @@ function App() {
     console.log("🔄 Re-analyzing beats...", { minEnergy, peakSensitivity });
     setIsAnalyzing(true);
     try {
-        const detectedBeats = await audioService.detectBeats(audioBuffer, minEnergy, peakSensitivity);
+        const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(audioBuffer, minEnergy, peakSensitivity);
         console.log(`✅ Detected ${detectedBeats.length} beats`);
         setBeats(detectedBeats);
+        setPhraseData(detectedPhraseData);
         showToast(`✓ ${detectedBeats.length} beat markers synced!`);
     } catch(e) {
         console.error("Beat detection failed:", e);
