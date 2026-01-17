@@ -121,7 +121,7 @@ export class AudioAnalyzerService {
   private detectDrops(envelope: number[], duration: number): DropZone[] {
     const drops: DropZone[] = [];
     const windowSize = 20;
-    const dropThreshold = 0.4;
+    const dropThreshold = 0.25; // Reduced from 0.4 - more sensitive
 
     const timePerSample = duration / envelope.length;
 
@@ -130,7 +130,8 @@ export class AudioAnalyzerService {
       const dropEnergy = envelope[i];
       const afterEnergy = envelope.slice(i, i + windowSize).reduce((a, b) => a + b, 0) / windowSize;
 
-      if (beforeEnergy < 0.4 && dropEnergy > beforeEnergy + dropThreshold && afterEnergy > 0.5) {
+      // More lenient detection: look for energy jumps from lower to higher
+      if (beforeEnergy < 0.6 && dropEnergy > beforeEnergy + dropThreshold && afterEnergy > 0.4) {
         const peakTime = i * timePerSample;
 
         const lastDrop = drops[drops.length - 1];
@@ -216,6 +217,8 @@ export class AudioAnalyzerService {
     const sortedByIntensity = [...beats].sort((a, b) => b.intensity - a.intensity);
     const top5Percent = Math.max(3, Math.floor(beats.length * 0.05));
     sortedByIntensity.slice(0, top5Percent).forEach(beat => heroTimes.add(beat.time));
+
+    console.log(`🦸 Hero moments: ${heroTimes.size} from drops(${drops.length}), phrase boundaries, and top ${top5Percent} intensity`);
 
     return beats.map(beat => ({
       ...beat,

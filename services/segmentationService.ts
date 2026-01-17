@@ -188,7 +188,8 @@ export class SegmentationService {
       const afterAvg = beats.slice(i, i + windowSize)
         .reduce((sum, b) => sum + b.intensity, 0) / windowSize;
 
-      if (beforeAvg < 0.4 && afterAvg > 0.6 && beats[i].intensity > 0.7) {
+      // More lenient: detect energy jumps
+      if (beforeAvg < 0.5 && afterAvg > 0.5 && beats[i].intensity > 0.6) {
         const lastDrop = drops[drops.length - 1];
         if (!lastDrop || beats[i].time - lastDrop.peakTime > 8) {
           drops.push({
