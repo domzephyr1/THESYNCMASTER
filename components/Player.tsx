@@ -86,6 +86,9 @@ const Player: React.FC<PlayerProps> = ({
   // Initialize
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
+        // Initialize to first segment's clip
+        activeClipRef.current = segments[0].videoIndex;
+        prevClipRef.current = -1;
         setIsReady(true);
     }
   }, [segments, videoClips]);
@@ -489,8 +492,8 @@ const Player: React.FC<PlayerProps> = ({
             src={clip.url}
             className="absolute top-0 left-0 w-full h-full object-contain"
             style={{
-                opacity: idx === 0 ? 1 : 0, // First clip visible initially
-                zIndex: idx === 0 ? 10 : 0,
+                opacity: (segments.length > 0 && idx === segments[0].videoIndex) ? 1 : 0,
+                zIndex: (segments.length > 0 && idx === segments[0].videoIndex) ? 10 : 0,
                 transition: 'none' // No CSS transitions - we control via JS
             }}
             muted
