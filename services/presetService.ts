@@ -65,7 +65,7 @@ export const STYLE_PRESETS: Record<string, StylePreset> = {
     minEnergy: 0.2,
     sensitivity: 2.5,
     speedRamping: true,
-    minSegmentBeats: 2,
+    minSegmentBeats: 1,
     maxSegmentBeats: 4,
     transitionWeights: {
       [TransitionType.CUT]: 0.5,
