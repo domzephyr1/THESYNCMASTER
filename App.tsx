@@ -604,7 +604,7 @@ function App() {
             {/* DEBUG: Player Data Check */}
             {process.env.NODE_ENV === 'development' && (
               <div className="text-xs text-slate-500 font-mono bg-slate-900 p-2 rounded border border-slate-700 mt-4">
-                DEBUG: Player Data - Segments: {segments.length}, Clips: {videoFiles.length}, Playing: {isPlaying}, Time: {currentTime.toFixed(2)}/{duration.toFixed(2)}
+                DEBUG: Player Data - Segments: {segments.length}, Clips: {videoFiles.length}, Playing: {isPlaying}, Time: {(currentTime || 0).toFixed(2)}/{(duration || 0).toFixed(2)}
               </div>
             )}
 
@@ -626,7 +626,7 @@ function App() {
               {/* DEBUG: Timeline Data Check */}
               {process.env.NODE_ENV === 'development' && (
                 <div className="text-xs text-slate-500 font-mono bg-slate-900 p-2 rounded border border-slate-700 mt-2">
-                  DEBUG: Timeline Data - Beats: {beats.length}, Duration: {duration.toFixed(2)}, Waveform: {waveformData.length} samples
+                  DEBUG: Timeline Data - Beats: {beats.length}, Duration: {(duration || 0).toFixed(2)}, Waveform: {waveformData.length} samples
                 </div>
               )}
                <div className="flex justify-between items-center text-xs text-slate-500">

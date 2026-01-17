@@ -41,7 +41,10 @@ const Timeline: React.FC<TimelineProps> = ({
       duration: duration,
       width: width,
       hasWaveform: waveformData.length > 0,
-      firstFewBeats: beats.slice(0, 3).map(b => ({ time: b.time.toFixed(2), intensity: b.intensity.toFixed(2) }))
+      firstFewBeats: beats.slice(0, 3).map(b => ({
+        time: b?.time?.toFixed?.(2) ?? 'undefined',
+        intensity: b?.intensity?.toFixed?.(2) ?? 'undefined'
+      }))
     });
 
     // Clear

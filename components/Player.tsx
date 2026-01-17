@@ -178,11 +178,11 @@ const Player: React.FC<PlayerProps> = ({
             const newClipIndex = currentSegment.videoIndex;
 
             console.log('🎬 CUT EVENT:', {
-              time: currentTime.toFixed(2),
+              time: (currentTime || 0).toFixed(2),
               fromClip: activeClipIndex,
               toClip: newClipIndex,
-              segmentStart: currentSegment.startTime.toFixed(2),
-              timeInSegment: timeInSegment.toFixed(2),
+              segmentStart: (currentSegment?.startTime || 0).toFixed(2),
+              timeInSegment: (timeInSegment || 0).toFixed(2),
               wasPreloaded: preloadedClipIndexRef.current === newClipIndex
             });
 
@@ -254,14 +254,14 @@ const Player: React.FC<PlayerProps> = ({
                  // DEBUG: Log sync issues
                  if (drift > 0.01) { // Log even small drifts
                    console.log('⚡ Video Sync:', {
-                     time: currentTime.toFixed(2),
+                     time: (currentTime || 0).toFixed(2),
                      clipIndex: activeClipIndex,
-                     currentVideoTime: activeVideo.currentTime.toFixed(3),
-                     targetVideoTime: targetVideoTime.toFixed(3),
-                     drift: drift.toFixed(3),
-                     willSeek: drift > 0.15,
-                     readyState: activeVideo.readyState,
-                     paused: activeVideo.paused,
+                     currentVideoTime: (activeVideo?.currentTime || 0).toFixed(3),
+                     targetVideoTime: (targetVideoTime || 0).toFixed(3),
+                     drift: (drift || 0).toFixed(3),
+                     willSeek: (drift || 0) > 0.15,
+                     readyState: activeVideo?.readyState || 'unknown',
+                     paused: activeVideo?.paused || 'unknown',
                      isPlaying: isPlaying
                    });
                  }
@@ -348,8 +348,8 @@ const Player: React.FC<PlayerProps> = ({
                // DEBUG: Log preloading decisions
                if (timeUntilNextCut < 1.0) { // Log when approaching cuts
                  console.log('🔮 Preload Check:', {
-                   time: currentTime.toFixed(2),
-                   nextCutIn: timeUntilNextCut.toFixed(2),
+                   time: (currentTime || 0).toFixed(2),
+                   nextCutIn: (timeUntilNextCut || 0).toFixed(2),
                    nextClipIndex: nextSegment.videoIndex,
                    currentlyPreloading: preloadingRef.current,
                    alreadyPreloaded: preloadedClipIndexRef.current === nextSegment.videoIndex,
