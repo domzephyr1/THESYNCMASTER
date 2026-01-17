@@ -192,9 +192,9 @@ const Player: React.FC<PlayerProps> = ({
               // Check if this clip was preloaded
               const wasPreloaded = preloadedClipIndexRef.current === newClipIndex;
 
-              // Only seek if NOT preloaded (preloaded clips are already at correct position)
+              // Seek to correct position - start at clipStartTime (timeInSegment should be ~0 at cut)
               if (!wasPreloaded) {
-                videoEl.currentTime = currentSegment.clipStartTime + timeInSegment;
+                videoEl.currentTime = currentSegment.clipStartTime;
               }
 
               videoEl.style.opacity = '1';
@@ -238,20 +238,21 @@ const Player: React.FC<PlayerProps> = ({
              if (activeVideo && clipData) {
                  const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
                  const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
-                 
+
                  // Handle Looping if segment is longer than clip source
                  const sourceDuration = clipData.trimEnd - clipData.trimStart;
                  let loopAdjustedTime = targetVideoTime;
                  if (targetVideoTime >= clipData.trimEnd) {
                     loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
-                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.5) {
+                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.2) {
                         activeVideo.currentTime = loopAdjustedTime;
                     }
                  } else {
-                    // Standard Sync
-                    if (drift > 0.4) activeVideo.currentTime = targetVideoTime;
+                    // Standard Sync - much tighter threshold for smoothness
+                    if (drift > 0.15) activeVideo.currentTime = targetVideoTime;
                  }
-                 
+
+                 // Ensure video is playing
                  if (isPlaying && activeVideo.paused) activeVideo.play().catch(()=>{});
 
                  // Apply Transforms
