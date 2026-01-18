@@ -8,18 +8,16 @@ export class RenderService {
 
   async load() {
     if (this.loaded) return;
-    
+
     this.ffmpeg = new FFmpeg();
-    
-    // Check for SharedArrayBuffer support (Required for FFmpeg.wasm multi-threaded)
-    if (!crossOriginIsolated) {
-        console.warn("SharedArrayBuffer is not available. Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers are missing.");
-        console.warn("This will cause FFmpeg to fall back to single-threaded mode, which may be slower.");
-        // Continue anyway - FFmpeg.wasm will attempt single-threaded mode
-    }
+
+    // Log FFmpeg output for debugging
+    this.ffmpeg.on('log', ({ message }) => {
+      console.log('[FFmpeg]', message);
+    });
 
     const baseURL = '/ffmpeg';
-    
+
     try {
         await this.ffmpeg.load({
             coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
@@ -29,10 +27,7 @@ export class RenderService {
         console.log("✅ FFmpeg loaded successfully");
     } catch (e) {
         console.error("Failed to load FFmpeg", e);
-        const errorMessage = crossOriginIsolated
-            ? "FFmpeg failed to initialize. Check if FFmpeg files are available at /ffmpeg/"
-            : "FFmpeg failed to initialize. Missing COOP/COEP headers. Try using 'Quick Record' option instead.";
-        throw new Error(errorMessage);
+        throw new Error("FFmpeg failed to initialize. Try using 'Quick Record' option instead.");
     }
   }
 
@@ -46,112 +41,129 @@ export class RenderService {
     const ffmpeg = this.ffmpeg!;
 
     ffmpeg.on('progress', ({ progress }) => {
-        onProgress(progress);
+        onProgress(Math.max(0, Math.min(1, progress)));
     });
 
-    console.log("Starting FFmpeg Render...");
-    console.log(`Processing ${segments.length} segments from ${videoClips.length} clips`);
+    console.log("🎬 Starting FFmpeg Render...");
+    console.log(`   Processing ${segments.length} segments from ${videoClips.length} clips`);
 
-    // 1. Write Audio - detect format from file extension
-    const audioExt = audioFile.name.split('.').pop()?.toLowerCase() || 'mp3';
-    const audioFilename = `audio.${audioExt}`;
-    await ffmpeg.writeFile(audioFilename, await fetchFile(audioFile));
+    // Limit segments to avoid FFmpeg memory issues (max 50 segments)
+    const maxSegments = 50;
+    const workingSegments = segments.length > maxSegments
+      ? segments.slice(0, maxSegments)
+      : segments;
 
-    // 2. Write Video Clips
-    // Only write clips that are actually used to save memory
-    const usedIndices = new Set(segments.map(s => s.videoIndex));
-    for (const i of usedIndices) {
-        const clip = videoClips[i];
-        // Detect video format from file extension
-        const videoExt = clip.name.split('.').pop()?.toLowerCase() || 'mp4';
-        console.log(`Loading clip ${i}: ${clip.name} (${videoExt})`);
-        await ffmpeg.writeFile(`clip${i}.${videoExt}`, await fetchFile(clip.file));
+    if (segments.length > maxSegments) {
+      console.warn(`⚠️ Limiting to ${maxSegments} segments (had ${segments.length})`);
     }
 
-    // 3. Build Filter Complex with speed ramping support
-    let filterComplex = '';
-
-    // Map videoIndex to FFmpeg input index and track file extensions
-    const inputMap = new Map<number, { inputIdx: number; ext: string }>();
-    let inputCounter = 1; // 0 is audio
-
-    for (const i of usedIndices) {
-        const clip = videoClips[i];
-        const videoExt = clip.name.split('.').pop()?.toLowerCase() || 'mp4';
-        inputMap.set(i, { inputIdx: inputCounter++, ext: videoExt });
-    }
-
-    segments.forEach((seg, idx) => {
-        const inputInfo = inputMap.get(seg.videoIndex)!;
-        const inputIdx = inputInfo.inputIdx;
-
-        // Calculate effective duration accounting for playback speed
-        // If speed is 1.5x, we need to trim 1.5x more source video to fill the segment duration
-        const playbackSpeed = seg.playbackSpeed || 1.0;
-        const sourceDuration = seg.duration * playbackSpeed;
-
-        // Build filter chain for this segment:
-        // 1. trim - extract source portion
-        // 2. setpts - apply speed change (PTS/speed makes video faster)
-        // 3. scale/pad - normalize resolution
-
-        if (playbackSpeed !== 1.0) {
-            // With speed ramping: trim more source, then speed up/slow down
-            filterComplex += `[${inputIdx}:v]trim=start=${seg.clipStartTime}:duration=${sourceDuration},setpts=${(1/playbackSpeed).toFixed(4)}*(PTS-STARTPTS),scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v${idx}];`;
-        } else {
-            // Normal speed
-            filterComplex += `[${inputIdx}:v]trim=start=${seg.clipStartTime}:duration=${seg.duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v${idx}];`;
-        }
-    });
-
-    // Concatenate all segments
-    filterComplex += segments.map((_, i) => `[v${i}]`).join('');
-    filterComplex += `concat=n=${segments.length}:v=1:a=0[outv]`;
-
-    // Build input file list
-    const inputFiles: string[] = [];
-    for (const i of usedIndices) {
-        const info = inputMap.get(i)!;
-        inputFiles.push('-i', `clip${i}.${info.ext}`);
-    }
-
-    const cmd = [
-        '-i', audioFilename,
-        ...inputFiles,
-        '-filter_complex', filterComplex,
-        '-map', '[outv]',
-        '-map', '0:a', // Map audio from input 0
-        '-c:v', 'libx264', // H.264
-        '-preset', 'ultrafast', // Speed over size
-        '-crf', '23', // Good quality
-        '-c:a', 'aac', // AAC audio for compatibility
-        '-b:a', '192k',
-        '-shortest', // Stop when shortest stream ends (usually audio)
-        '-movflags', '+faststart', // Enable fast start for web playback
-        'output.mp4'
-    ];
-
-    console.log("FFmpeg Command:", cmd.join(' '));
-
-    await ffmpeg.exec(cmd);
-
-    // 4. Read Output
-    const data = await ffmpeg.readFile('output.mp4');
-
-    // 5. Cleanup - Delete all files from virtual FS to free memory
     try {
-      await ffmpeg.deleteFile(audioFilename);
-      await ffmpeg.deleteFile('output.mp4');
-      for (const i of usedIndices) {
-        const info = inputMap.get(i)!;
-        await ffmpeg.deleteFile(`clip${i}.${info.ext}`);
-      }
-      console.log("✅ FFmpeg cleanup complete");
-    } catch (cleanupErr) {
-      console.warn("FFmpeg cleanup warning:", cleanupErr);
-    }
+      // 1. Write Audio
+      const audioData = await fetchFile(audioFile);
+      await ffmpeg.writeFile('audio.mp3', audioData);
+      console.log("✓ Audio loaded");
 
-    return new Blob([data], { type: 'video/mp4' });
+      // 2. Write only the video clips we need
+      const usedIndices = [...new Set(workingSegments.map(s => s.videoIndex))];
+
+      for (const i of usedIndices) {
+        const clip = videoClips[i];
+        if (!clip || !clip.file) {
+          console.warn(`Clip ${i} missing, skipping`);
+          continue;
+        }
+        const videoData = await fetchFile(clip.file);
+        await ffmpeg.writeFile(`v${i}.mp4`, videoData);
+        console.log(`✓ Loaded clip ${i}: ${clip.name}`);
+      }
+
+      // 3. Create a simple concat file approach (more reliable than filter_complex)
+      // First, extract each segment to a temp file
+      const segmentFiles: string[] = [];
+
+      for (let i = 0; i < workingSegments.length; i++) {
+        const seg = workingSegments[i];
+        const clipIdx = seg.videoIndex;
+        const segFile = `seg${i}.mp4`;
+
+        // Simple extract: just trim the segment from source
+        // Use -ss before -i for fast seeking, then -t for duration
+        const extractCmd = [
+          '-ss', seg.clipStartTime.toFixed(3),
+          '-i', `v${clipIdx}.mp4`,
+          '-t', seg.duration.toFixed(3),
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-crf', '28',
+          '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30',
+          '-an', // No audio for segments
+          '-y',
+          segFile
+        ];
+
+        console.log(`Extracting segment ${i + 1}/${workingSegments.length}...`);
+        await ffmpeg.exec(extractCmd);
+        segmentFiles.push(segFile);
+
+        onProgress((i + 1) / (workingSegments.length + 2) * 0.8);
+      }
+
+      // 4. Create concat list file
+      const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
+      await ffmpeg.writeFile('list.txt', concatList);
+      console.log("✓ Created concat list");
+
+      // 5. Concat all segments and add audio
+      console.log("🔗 Concatenating segments with audio...");
+      const concatCmd = [
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'list.txt',
+        '-i', 'audio.mp3',
+        '-c:v', 'copy', // Copy video (already encoded)
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-shortest',
+        '-movflags', '+faststart',
+        '-y',
+        'output.mp4'
+      ];
+
+      await ffmpeg.exec(concatCmd);
+      onProgress(0.95);
+
+      // 6. Read output
+      console.log("📦 Reading output file...");
+      const data = await ffmpeg.readFile('output.mp4');
+
+      if (!data || (data as Uint8Array).length < 1000) {
+        throw new Error('Output file is empty or too small');
+      }
+
+      console.log(`✅ Export complete! File size: ${((data as Uint8Array).length / 1024 / 1024).toFixed(2)} MB`);
+
+      // 7. Cleanup
+      try {
+        await ffmpeg.deleteFile('audio.mp3');
+        await ffmpeg.deleteFile('list.txt');
+        await ffmpeg.deleteFile('output.mp4');
+        for (const i of usedIndices) {
+          await ffmpeg.deleteFile(`v${i}.mp4`);
+        }
+        for (const f of segmentFiles) {
+          await ffmpeg.deleteFile(f);
+        }
+      } catch (e) {
+        console.warn("Cleanup warning:", e);
+      }
+
+      onProgress(1);
+      return new Blob([data], { type: 'video/mp4' });
+
+    } catch (err) {
+      console.error("FFmpeg export failed:", err);
+      throw new Error(`Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
   }
 }
 
