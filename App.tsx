@@ -333,20 +333,20 @@ function App() {
     }
   }, [audioBuffer, minEnergy, peakSensitivity]);
 
-  // Debounced Auto Re-Sync
-  useEffect(() => {
-    if (step === AppStep.PREVIEW && audioBuffer && !isAnalyzing) {
-        autoResyncTimerRef.current = setTimeout(() => {
-            handleReSync();
-        }, 600);
-        return () => {
-          if (autoResyncTimerRef.current) {
-            clearTimeout(autoResyncTimerRef.current);
-            autoResyncTimerRef.current = null;
-          }
-        };
-    }
-  }, [minEnergy, peakSensitivity, step, audioBuffer, isAnalyzing, handleReSync]);
+  // Auto Re-Sync DISABLED - only re-analyze when user clicks the button
+  // useEffect(() => {
+  //   if (step === AppStep.PREVIEW && audioBuffer && !isAnalyzing) {
+  //       autoResyncTimerRef.current = setTimeout(() => {
+  //           handleReSync();
+  //       }, 600);
+  //       return () => {
+  //         if (autoResyncTimerRef.current) {
+  //           clearTimeout(autoResyncTimerRef.current);
+  //           autoResyncTimerRef.current = null;
+  //         }
+  //       };
+  //   }
+  // }, [minEnergy, peakSensitivity, step, audioBuffer, isAnalyzing, handleReSync]);
 
   // Apply style preset
   const applyPreset = (presetId: string) => {
