@@ -433,18 +433,36 @@ function App() {
     console.log("🔄 Re-analyzing beats...", { minEnergy, peakSensitivity });
     setIsAnalyzing(true);
     try {
+        // Step 1: Detect new beats
         const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(audioBuffer, minEnergy, peakSensitivity);
         console.log(`✅ Detected ${detectedBeats.length} beats`);
         setBeats(detectedBeats);
         setPhraseData(detectedPhraseData);
-        showToast(`✓ ${detectedBeats.length} beat markers synced!`);
+
+        // Step 2: Regenerate segments with new beats
+        if (detectedBeats.length > 0 && videoFiles.length > 0) {
+            console.log("🎬 Regenerating segments...");
+            const result = segmentationService.generateMontage(detectedBeats, videoFiles, audioBuffer.duration, {
+                enableSpeedRamping,
+                enableSmartReorder,
+                preset: STYLE_PRESETS[currentPreset],
+                phraseData: detectedPhraseData || undefined
+            });
+            setSegments(result.segments);
+            setEstimatedBpm(result.bpm);
+            setSyncScore(result.averageScore);
+            console.log(`✅ Generated ${result.segments.length} segments`);
+            showToast(`✓ ${detectedBeats.length} beats → ${result.segments.length} segments`);
+        } else {
+            showToast(`✓ ${detectedBeats.length} beat markers detected`);
+        }
     } catch(e) {
         console.error("Beat detection failed:", e);
         showToast("Beat detection failed");
     } finally {
         setIsAnalyzing(false);
     }
-  }, [audioBuffer, minEnergy, peakSensitivity]);
+  }, [audioBuffer, minEnergy, peakSensitivity, videoFiles, enableSpeedRamping, enableSmartReorder, currentPreset]);
 
   // Auto Re-Sync DISABLED - only re-analyze when user clicks the button
   // useEffect(() => {
