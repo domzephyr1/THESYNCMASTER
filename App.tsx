@@ -419,8 +419,15 @@ function App() {
   };
 
   const handleReSync = useCallback(async () => {
+    console.log("🔘 RE-ANALYZE button clicked!", {
+      hasAudioBuffer: !!audioBuffer,
+      videoFilesCount: videoFiles.length,
+      isAnalyzing
+    });
+
     if (!audioBuffer) {
         console.warn("handleReSync: No audioBuffer available");
+        showToast("No audio loaded - please reload the page");
         return;
     }
 
@@ -462,7 +469,7 @@ function App() {
     } finally {
         setIsAnalyzing(false);
     }
-  }, [audioBuffer, minEnergy, peakSensitivity, videoFiles, enableSpeedRamping, enableSmartReorder, currentPreset]);
+  }, [audioBuffer, minEnergy, peakSensitivity, videoFiles, enableSpeedRamping, enableSmartReorder, currentPreset, isAnalyzing]);
 
   // Auto Re-Sync DISABLED - only re-analyze when user clicks the button
   // useEffect(() => {
