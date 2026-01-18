@@ -83,13 +83,45 @@ const Player: React.FC<PlayerProps> = ({
   const preloadedClipIndexRef = useRef<number>(-1);
   const preloadingRef = useRef<boolean>(false);
 
-  // Initialize
+  // Initialize and preload videos for smooth playback
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
-        // Initialize to first segment's clip
-        activeClipRef.current = segments[0].videoIndex;
-        prevClipRef.current = -1;
+      // Initialize to first segment's clip
+      activeClipRef.current = segments[0].videoIndex;
+      prevClipRef.current = -1;
+
+      // Preload first 3 unique video clips used in segments for smooth start
+      const preloadVideos = async () => {
+        const uniqueIndices = [...new Set(segments.slice(0, 10).map(s => s.videoIndex))].slice(0, 3);
+
+        await Promise.all(
+          uniqueIndices.map(idx => {
+            return new Promise<void>((resolve) => {
+              const video = videoRefs.current[idx];
+              if (video) {
+                if (video.readyState >= 3) {
+                  resolve();
+                  return;
+                }
+                const onReady = () => {
+                  video.removeEventListener('canplaythrough', onReady);
+                  resolve();
+                };
+                video.addEventListener('canplaythrough', onReady);
+                video.load();
+                // Timeout fallback
+                setTimeout(resolve, 2000);
+              } else {
+                resolve();
+              }
+            });
+          })
+        );
+
         setIsReady(true);
+      };
+
+      preloadVideos();
     }
   }, [segments, videoClips]);
 

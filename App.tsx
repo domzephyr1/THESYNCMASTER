@@ -282,12 +282,39 @@ function App() {
     setIsAnalyzing(true);
 
     try {
+      // Step 1: Decode audio
+      console.log("📊 Step 1/4: Decoding audio...");
       const buffer = await audioService.decodeAudio(audioFile);
       setAudioBuffer(buffer);
       setDuration(buffer.duration);
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Step 2: Wait for all video metadata to be loaded
+      console.log("📊 Step 2/4: Loading video metadata...");
+      const videosReady = await Promise.all(
+        videoFiles.map(clip => {
+          return new Promise<VideoClip>((resolve) => {
+            if (clip.duration > 0) {
+              resolve(clip);
+              return;
+            }
+            const video = document.createElement('video');
+            video.src = clip.url;
+            video.onloadedmetadata = () => {
+              const updatedClip = { ...clip, duration: video.duration, trimEnd: video.duration };
+              resolve(updatedClip);
+            };
+            video.onerror = () => resolve(clip); // Resolve anyway on error
+            // Timeout fallback
+            setTimeout(() => resolve(clip), 3000);
+          });
+        })
+      );
 
+      // Update video files with loaded metadata
+      setVideoFiles(videosReady);
+
+      // Step 3: Detect beats
+      console.log("📊 Step 3/4: Analyzing beats...");
       const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(buffer, minEnergy, peakSensitivity);
       setBeats(detectedBeats);
       setPhraseData(detectedPhraseData);
@@ -295,6 +322,36 @@ function App() {
       const wave = audioService.getWaveformData(buffer, 300);
       setWaveformData(wave);
 
+      // Step 4: Pre-generate segments so they're ready immediately
+      console.log("📊 Step 4/4: Generating sync segments...");
+      if (detectedBeats.length > 0 && videosReady.length > 0) {
+        const result = segmentationService.generateMontage(detectedBeats, videosReady, buffer.duration, {
+          enableSpeedRamping,
+          enableSmartReorder,
+          preset: STYLE_PRESETS[currentPreset],
+          phraseData: detectedPhraseData || undefined
+        });
+        setSegments(result.segments);
+        setEstimatedBpm(result.bpm);
+        setSyncScore(result.averageScore);
+      }
+
+      // Step 5: Pre-buffer first video frames
+      console.log("✅ Analysis complete! Pre-buffering videos...");
+      await Promise.all(
+        videosReady.slice(0, 3).map(clip => {
+          return new Promise<void>((resolve) => {
+            const video = document.createElement('video');
+            video.src = clip.url;
+            video.preload = 'auto';
+            video.oncanplaythrough = () => resolve();
+            video.onerror = () => resolve();
+            setTimeout(() => resolve(), 2000); // 2s timeout per video
+          });
+        })
+      );
+
+      console.log("🎬 Ready to preview!");
       setIsAnalyzing(false);
       setStep(AppStep.PREVIEW);
     } catch (err) {
