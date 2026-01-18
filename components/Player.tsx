@@ -305,8 +305,14 @@ const Player: React.FC<PlayerProps> = ({
                     if (drift > 0.05) activeVideo.currentTime = targetVideoTime;
                  }
 
-                 // Ensure video is playing
+                 // Ensure video is playing and apply speed ramping
                  if (isPlaying && activeVideo.paused) activeVideo.play().catch(()=>{});
+
+                 // Apply speed ramping continuously (not just on cuts)
+                 const targetSpeed = currentSegment.playbackSpeed || 1.0;
+                 if (activeVideo.playbackRate !== targetSpeed) {
+                   activeVideo.playbackRate = targetSpeed;
+                 }
 
                  // Apply Transforms
                  let scale = fxState.current.zoom;

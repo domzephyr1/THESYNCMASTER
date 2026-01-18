@@ -104,10 +104,10 @@ export class SegmentationService {
       // --- Speed Ramping ---
       let playbackSpeed = 1.0;
       if (enableSpeedRamping) {
-        if (inDrop && beat.intensity > 0.8) {
-          playbackSpeed = 1.2; // Speed up on high energy
-        } else if (beat.intensity < 0.3 && !inDrop) {
-          playbackSpeed = 0.7; // Slow-mo on quiet parts
+        if (inDrop || beat.intensity > 0.7) {
+          playbackSpeed = 1.15 + (beat.intensity * 0.15); // 1.15x to 1.3x on high energy/drops
+        } else if (beat.intensity < 0.4) {
+          playbackSpeed = 0.6 + (beat.intensity * 0.5); // 0.6x to 0.8x on quiet parts (slow-mo)
         }
       }
 
@@ -145,7 +145,12 @@ export class SegmentationService {
 
     const averageScore = segments.length > 0 ? Math.round(totalScore / segments.length) : 0;
 
+    // Count how many clips have metadata
+    const clipsWithMetadata = videoClips.filter(c => c.metadata?.processed).length;
+    const speedRampedSegments = segments.filter(s => s.playbackSpeed !== 1.0).length;
+
     console.log(`🎬 Generated ${segments.length} segments | ${heroBeats.length} hero moments | ${drops.length} drops | Score: ${averageScore}%`);
+    console.log(`📊 Clips with AI metadata: ${clipsWithMetadata}/${videoClips.length} | Speed-ramped segments: ${speedRampedSegments}`);
 
     return {
       segments,
