@@ -251,18 +251,12 @@ const Player: React.FC<PlayerProps> = ({
                  const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
                  const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
 
-                 // DEBUG: Log sync issues
-                 if (drift > 0.01) { // Log even small drifts
-                   console.log('⚡ Video Sync:', {
+                 // Only log significant drift issues (> 0.1s = noticeable)
+                 if (drift > 0.1) {
+                   console.log('⚡ Video Sync Drift:', {
                      time: (currentTime || 0).toFixed(2),
-                     clipIndex: activeClipIndex,
-                     currentVideoTime: (activeVideo?.currentTime || 0).toFixed(3),
-                     targetVideoTime: (targetVideoTime || 0).toFixed(3),
                      drift: (drift || 0).toFixed(3),
-                     willSeek: (drift || 0) > 0.15,
-                     readyState: activeVideo?.readyState || 'unknown',
-                     paused: activeVideo?.paused || 'unknown',
-                     isPlaying: isPlaying
+                     willSeek: true
                    });
                  }
 
@@ -271,12 +265,12 @@ const Player: React.FC<PlayerProps> = ({
                  let loopAdjustedTime = targetVideoTime;
                  if (targetVideoTime >= clipData.trimEnd) {
                     loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
-                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.2) {
+                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.08) {
                         activeVideo.currentTime = loopAdjustedTime;
                     }
                  } else {
-                    // Standard Sync - much tighter threshold for smoothness
-                    if (drift > 0.15) activeVideo.currentTime = targetVideoTime;
+                    // Tighter sync: correct if drift > 50ms (perceptible audio/video mismatch)
+                    if (drift > 0.05) activeVideo.currentTime = targetVideoTime;
                  }
 
                  // Ensure video is playing
@@ -344,21 +338,6 @@ const Player: React.FC<PlayerProps> = ({
              if (currentSegmentIndex >= 0 && currentSegmentIndex < segments.length - 1) {
                const nextSegment = segments[currentSegmentIndex + 1];
                const timeUntilNextCut = nextSegment.startTime - currentTime;
-
-               // DEBUG: Log preloading decisions
-               if (timeUntilNextCut < 1.0) { // Log when approaching cuts
-                 console.log('🔮 Preload Check:', {
-                   time: (currentTime || 0).toFixed(2),
-                   nextCutIn: (timeUntilNextCut || 0).toFixed(2),
-                   nextClipIndex: nextSegment.videoIndex,
-                   currentlyPreloading: preloadingRef.current,
-                   alreadyPreloaded: preloadedClipIndexRef.current === nextSegment.videoIndex,
-                   willStartPreload: timeUntilNextCut < 0.5 && timeUntilNextCut > 0 &&
-                     nextSegment.videoIndex !== preloadedClipIndexRef.current &&
-                     nextSegment.videoIndex !== activeClipIndex &&
-                     !preloadingRef.current
-                 });
-               }
 
                // Start preloading 500ms before cut
                if (timeUntilNextCut < 0.5 && timeUntilNextCut > 0) {
