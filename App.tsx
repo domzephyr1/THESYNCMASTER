@@ -282,15 +282,17 @@ function App() {
     setIsAnalyzing(true);
 
     try {
-      // Step 1: Decode audio
-      console.log("📊 Step 1/4: Decoding audio...");
+      const totalClips = videoFiles.length;
+
+      // ========== STEP 1: Decode Audio ==========
+      console.log("📊 Step 1/6: Decoding audio...");
       const buffer = await audioService.decodeAudio(audioFile);
       setAudioBuffer(buffer);
       setDuration(buffer.duration);
 
-      // Step 2: Wait for all video metadata to be loaded
-      console.log("📊 Step 2/4: Loading video metadata...");
-      const videosReady = await Promise.all(
+      // ========== STEP 2: Load ALL Video Metadata ==========
+      console.log("📊 Step 2/6: Loading video metadata...");
+      const videosWithDuration = await Promise.all(
         videoFiles.map(clip => {
           return new Promise<VideoClip>((resolve) => {
             if (clip.duration > 0) {
@@ -303,18 +305,39 @@ function App() {
               const updatedClip = { ...clip, duration: video.duration, trimEnd: video.duration };
               resolve(updatedClip);
             };
-            video.onerror = () => resolve(clip); // Resolve anyway on error
-            // Timeout fallback
-            setTimeout(() => resolve(clip), 3000);
+            video.onerror = () => resolve(clip);
+            setTimeout(() => resolve(clip), 5000); // 5s timeout
           });
         })
       );
 
-      // Update video files with loaded metadata
-      setVideoFiles(videosReady);
+      // ========== STEP 3: Run AI Analysis on ALL Clips ==========
+      console.log(`📊 Step 3/6: Analyzing ${totalClips} video clips (motion, brightness, contrast)...`);
+      const videosWithMetadata = await Promise.all(
+        videosWithDuration.map(async (clip, index) => {
+          // Skip if already analyzed
+          if (clip.metadata?.processed) {
+            console.log(`  ✓ Clip ${index + 1}/${totalClips}: ${clip.name} (cached)`);
+            return clip;
+          }
 
-      // Step 3: Detect beats
-      console.log("📊 Step 3/4: Analyzing beats...");
+          try {
+            console.log(`  → Analyzing clip ${index + 1}/${totalClips}: ${clip.name}...`);
+            const metadata = await videoAnalysisService.analyzeClip(clip.url);
+            console.log(`  ✓ Clip ${index + 1}/${totalClips}: brightness=${metadata.brightness?.toFixed(2)}, motion=${metadata.motionEnergy?.toFixed(2)}`);
+            return { ...clip, metadata };
+          } catch (e) {
+            console.warn(`  ✗ Clip ${index + 1} analysis failed:`, e);
+            return { ...clip, metadata: { brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true } };
+          }
+        })
+      );
+
+      // Update state with fully analyzed clips
+      setVideoFiles(videosWithMetadata);
+
+      // ========== STEP 4: Detect Beats ==========
+      console.log("📊 Step 4/6: Analyzing audio beats and rhythm...");
       const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(buffer, minEnergy, peakSensitivity);
       setBeats(detectedBeats);
       setPhraseData(detectedPhraseData);
@@ -322,36 +345,69 @@ function App() {
       const wave = audioService.getWaveformData(buffer, 300);
       setWaveformData(wave);
 
-      // Step 4: Pre-generate segments so they're ready immediately
-      console.log("📊 Step 4/4: Generating sync segments...");
-      if (detectedBeats.length > 0 && videosReady.length > 0) {
-        const result = segmentationService.generateMontage(detectedBeats, videosReady, buffer.duration, {
+      // ========== STEP 5: Generate Sync Segments ==========
+      console.log("📊 Step 5/6: Computing optimal sync cuts...");
+      let generatedSegments: EnhancedSyncSegment[] = [];
+      if (detectedBeats.length > 0 && videosWithMetadata.length > 0) {
+        const result = segmentationService.generateMontage(detectedBeats, videosWithMetadata, buffer.duration, {
           enableSpeedRamping,
           enableSmartReorder,
           preset: STYLE_PRESETS[currentPreset],
           phraseData: detectedPhraseData || undefined
         });
+        generatedSegments = result.segments;
         setSegments(result.segments);
         setEstimatedBpm(result.bpm);
         setSyncScore(result.averageScore);
       }
 
-      // Step 5: Pre-buffer first video frames
-      console.log("✅ Analysis complete! Pre-buffering videos...");
+      // ========== STEP 6: Pre-buffer ALL Videos ==========
+      console.log(`📊 Step 6/6: Pre-buffering ${totalClips} videos for smooth playback...`);
       await Promise.all(
-        videosReady.slice(0, 3).map(clip => {
+        videosWithMetadata.map((clip, index) => {
           return new Promise<void>((resolve) => {
             const video = document.createElement('video');
             video.src = clip.url;
             video.preload = 'auto';
-            video.oncanplaythrough = () => resolve();
-            video.onerror = () => resolve();
-            setTimeout(() => resolve(), 2000); // 2s timeout per video
+            video.muted = true;
+
+            // Seek to a few key positions to force buffering
+            const seekPositions = [0, 0.25, 0.5, 0.75].map(p => p * (clip.duration || 1));
+            let currentSeek = 0;
+
+            const doSeek = () => {
+              if (currentSeek < seekPositions.length) {
+                video.currentTime = seekPositions[currentSeek];
+                currentSeek++;
+              } else {
+                console.log(`  ✓ Buffered clip ${index + 1}/${totalClips}`);
+                resolve();
+              }
+            };
+
+            video.onseeked = doSeek;
+            video.oncanplaythrough = () => {
+              if (currentSeek === 0) doSeek(); // Start seeking
+            };
+            video.onerror = () => {
+              console.warn(`  ✗ Failed to buffer clip ${index + 1}`);
+              resolve();
+            };
+
+            // Timeout fallback - 3s per clip
+            setTimeout(() => {
+              console.log(`  ⏱ Clip ${index + 1}/${totalClips} buffer timeout (continuing...)`);
+              resolve();
+            }, 3000);
+
+            video.load();
           });
         })
       );
 
-      console.log("🎬 Ready to preview!");
+      console.log("🎬 Analysis complete! Ready to preview.");
+      console.log(`   ${detectedBeats.length} beats | ${generatedSegments.length} segments | ${totalClips} clips analyzed`);
+
       setIsAnalyzing(false);
       setStep(AppStep.PREVIEW);
     } catch (err) {
