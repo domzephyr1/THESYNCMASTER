@@ -233,40 +233,29 @@ const Player: React.FC<PlayerProps> = ({
             // Show and play new video
             const videoEl = videoRefs.current[newClipIndex];
             if (videoEl) {
-              // Check if this clip was preloaded
+              // Check if this clip was preloaded to the correct position
               const wasPreloaded = preloadedClipIndexRef.current === newClipIndex;
 
-              // Seek to correct position - start at clipStartTime (timeInSegment should be ~0 at cut)
-              if (!wasPreloaded) {
-                videoEl.currentTime = currentSegment.clipStartTime;
-              }
+              // ALWAYS set position precisely at cut - this is critical for sync
+              const targetStartTime = currentSegment.clipStartTime;
+              videoEl.currentTime = targetStartTime;
 
+              // Set playback speed BEFORE playing
+              videoEl.playbackRate = currentSegment.playbackSpeed || 1.0;
+
+              // Make visible
               videoEl.style.opacity = '1';
               videoEl.style.zIndex = '10';
               videoEl.style.transform = 'scale(1)';
               videoEl.style.filter = '';
-              // Apply speed ramping if present
-              videoEl.playbackRate = currentSegment.playbackSpeed || 1.0;
 
-              // Only play if buffer is ready (prevents freeze frames)
+              // Start playing immediately - don't wait
               if (isPlaying) {
-                if (videoEl.readyState >= 3 || wasPreloaded) {
-                  // HAVE_FUTURE_DATA or preloaded = ready to play
-                  videoEl.play().catch(() => {});
-                } else {
-                  // Wait for buffer
-                  const onCanPlay = () => {
-                    videoEl.play().catch(() => {});
-                    videoEl.removeEventListener('canplay', onCanPlay);
-                  };
-                  videoEl.addEventListener('canplay', onCanPlay, { once: true });
-                }
+                videoEl.play().catch(() => {});
               }
 
-              // Reset preload state for this clip
-              if (wasPreloaded) {
-                preloadedClipIndexRef.current = -1;
-              }
+              // Reset preload state
+              preloadedClipIndexRef.current = -1;
             }
 
             // Update UI state less frequently (every cut is fine)
@@ -277,40 +266,33 @@ const Player: React.FC<PlayerProps> = ({
              const activeVideo = videoRefs.current[activeClipIndex];
              const prevVideo = videoRefs.current[prevClipIndex];
              
-             // 1. Sync Active Video
+             // 1. Sync Active Video - LET IT PLAY NATURALLY, only correct major drift
              const clipData = videoClips[activeClipIndex];
              if (activeVideo && clipData) {
                  const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
                  const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
 
-                 // Only log significant drift issues (> 0.1s = noticeable)
-                 if (drift > 0.1) {
-                   console.log('⚡ Video Sync Drift:', {
-                     time: (currentTime || 0).toFixed(2),
-                     drift: (drift || 0).toFixed(3),
-                     willSeek: true
-                   });
-                 }
-
-                 // Handle Looping if segment is longer than clip source
+                 // Handle Looping ONLY - if segment needs to loop back
                  const sourceDuration = clipData.trimEnd - clipData.trimStart;
-                 let loopAdjustedTime = targetVideoTime;
                  if (targetVideoTime >= clipData.trimEnd) {
-                    loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
-                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.08) {
+                    const loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
+                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.15) {
                         activeVideo.currentTime = loopAdjustedTime;
                     }
-                 } else {
-                    // Tighter sync: correct if drift > 50ms (perceptible audio/video mismatch)
-                    if (drift > 0.05) activeVideo.currentTime = targetVideoTime;
+                 }
+                 // REMOVED: Constant drift correction - this was causing stuttering
+                 // Only correct if SEVERELY out of sync (> 300ms) - indicates a real problem
+                 else if (drift > 0.3) {
+                    console.log('⚡ Major drift correction:', drift.toFixed(3));
+                    activeVideo.currentTime = targetVideoTime;
                  }
 
-                 // Ensure video is playing and apply speed ramping
+                 // Ensure video is playing
                  if (isPlaying && activeVideo.paused) activeVideo.play().catch(()=>{});
 
-                 // Apply speed ramping continuously (not just on cuts)
+                 // Apply speed ramping (set once per segment, not every frame)
                  const targetSpeed = currentSegment.playbackSpeed || 1.0;
-                 if (activeVideo.playbackRate !== targetSpeed) {
+                 if (Math.abs(activeVideo.playbackRate - targetSpeed) > 0.01) {
                    activeVideo.playbackRate = targetSpeed;
                  }
 
