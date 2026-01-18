@@ -245,18 +245,32 @@ export class AudioAnalyzerService {
         const vectorSignal = this.essentia.arrayToVector(channelData);
         const rhythm = this.essentia.RhythmExtractor2013(vectorSignal);
         const ticks = this.essentia.vectorToArray(rhythm.ticks);
-        const confidence = rhythm.confidence;
+        const bpm = rhythm.bpm;
 
         if (vectorSignal.delete) vectorSignal.delete();
 
         if (ticks.length > 0) {
-          // Convert Essentia vector to proper JavaScript array (fixes NaN issue)
+          // Convert Essentia vector to proper JavaScript array
           const ticksArray: number[] = [];
           for (let i = 0; i < ticks.length; i++) {
             ticksArray.push(ticks[i]);
           }
 
-          return ticksArray.map((time: number) => ({
+          // Filter beats based on sensitivity - higher sensitivity = fewer beats
+          // sensitivity 1.0 = keep every beat, 4.0 = keep only every 4th beat (downbeats)
+          const beatInterval = Math.max(1, Math.floor(sensitivity));
+          const filteredTicks = ticksArray.filter((_, idx) => idx % beatInterval === 0);
+
+          // Also respect minEnergy by limiting total beats
+          // Higher minEnergy = fewer beats (more selective)
+          const maxBeats = Math.floor(buffer.duration / (0.3 + minEnergy * 2));
+          const finalTicks = filteredTicks.length > maxBeats
+            ? filteredTicks.filter((_, idx) => idx % Math.ceil(filteredTicks.length / maxBeats) === 0)
+            : filteredTicks;
+
+          console.log(`🎵 Essentia: ${ticksArray.length} raw → ${filteredTicks.length} filtered → ${finalTicks.length} final (sensitivity=${sensitivity}, minEnergy=${minEnergy})`);
+
+          return finalTicks.map((time: number) => ({
             time,
             intensity: 0.8
           }));
