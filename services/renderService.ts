@@ -47,15 +47,8 @@ export class RenderService {
     console.log("🎬 Starting FFmpeg Render...");
     console.log(`   Processing ${segments.length} segments from ${videoClips.length} clips`);
 
-    // Limit segments to avoid FFmpeg memory issues (max 50 segments)
-    const maxSegments = 50;
-    const workingSegments = segments.length > maxSegments
-      ? segments.slice(0, maxSegments)
-      : segments;
-
-    if (segments.length > maxSegments) {
-      console.warn(`⚠️ Limiting to ${maxSegments} segments (had ${segments.length})`);
-    }
+    // Process ALL segments - no limit
+    const workingSegments = segments;
 
     try {
       // 1. Write Audio
@@ -77,50 +70,101 @@ export class RenderService {
         console.log(`✓ Loaded clip ${i}: ${clip.name}`);
       }
 
-      // 3. Create a simple concat file approach (more reliable than filter_complex)
-      // First, extract each segment to a temp file
-      const segmentFiles: string[] = [];
+      // 3. Process in batches to manage memory for long songs
+      const BATCH_SIZE = 25;
+      const totalBatches = Math.ceil(workingSegments.length / BATCH_SIZE);
+      let intermediateFiles: string[] = [];
 
-      for (let i = 0; i < workingSegments.length; i++) {
-        const seg = workingSegments[i];
-        const clipIdx = seg.videoIndex;
-        const segFile = `seg${i}.mp4`;
+      for (let batch = 0; batch < totalBatches; batch++) {
+        const batchStart = batch * BATCH_SIZE;
+        const batchEnd = Math.min(batchStart + BATCH_SIZE, workingSegments.length);
+        const batchSegments = workingSegments.slice(batchStart, batchEnd);
 
-        // Simple extract: just trim the segment from source
-        // Use -ss before -i for fast seeking, then -t for duration
-        const extractCmd = [
-          '-ss', seg.clipStartTime.toFixed(3),
-          '-i', `v${clipIdx}.mp4`,
-          '-t', seg.duration.toFixed(3),
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-crf', '28',
-          '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30',
-          '-an', // No audio for segments
+        console.log(`📦 Processing batch ${batch + 1}/${totalBatches} (segments ${batchStart + 1}-${batchEnd})`);
+
+        const segmentFiles: string[] = [];
+
+        // Extract each segment in this batch
+        for (let i = 0; i < batchSegments.length; i++) {
+          const seg = batchSegments[i];
+          const globalIdx = batchStart + i;
+          const clipIdx = seg.videoIndex;
+          const segFile = `seg${globalIdx}.mp4`;
+
+          const extractCmd = [
+            '-ss', seg.clipStartTime.toFixed(3),
+            '-i', `v${clipIdx}.mp4`,
+            '-t', seg.duration.toFixed(3),
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '28',
+            '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30',
+            '-an',
+            '-y',
+            segFile
+          ];
+
+          await ffmpeg.exec(extractCmd);
+          segmentFiles.push(segFile);
+
+          const overallProgress = (globalIdx + 1) / workingSegments.length * 0.7;
+          onProgress(overallProgress);
+        }
+
+        // Concat this batch into an intermediate file
+        const batchFile = `batch${batch}.mp4`;
+        const batchList = segmentFiles.map(f => `file '${f}'`).join('\n');
+        await ffmpeg.writeFile(`list${batch}.txt`, batchList);
+
+        await ffmpeg.exec([
+          '-f', 'concat',
+          '-safe', '0',
+          '-i', `list${batch}.txt`,
+          '-c', 'copy',
           '-y',
-          segFile
-        ];
+          batchFile
+        ]);
 
-        console.log(`Extracting segment ${i + 1}/${workingSegments.length}...`);
-        await ffmpeg.exec(extractCmd);
-        segmentFiles.push(segFile);
+        intermediateFiles.push(batchFile);
 
-        onProgress((i + 1) / (workingSegments.length + 2) * 0.8);
+        // Clean up segment files to free memory
+        for (const f of segmentFiles) {
+          try { await ffmpeg.deleteFile(f); } catch {}
+        }
+        try { await ffmpeg.deleteFile(`list${batch}.txt`); } catch {}
+
+        console.log(`✓ Batch ${batch + 1} complete`);
       }
 
-      // 4. Create concat list file
-      const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
-      await ffmpeg.writeFile('list.txt', concatList);
-      console.log("✓ Created concat list");
+      // 4. Final concat of all batches with audio
+      console.log("🔗 Final merge with audio...");
+      onProgress(0.75);
 
-      // 5. Concat all segments and add audio
-      console.log("🔗 Concatenating segments with audio...");
+      // If multiple batches, concat them first
+      let videoFile = intermediateFiles[0];
+      if (intermediateFiles.length > 1) {
+        const finalList = intermediateFiles.map(f => `file '${f}'`).join('\n');
+        await ffmpeg.writeFile('final_list.txt', finalList);
+
+        await ffmpeg.exec([
+          '-f', 'concat',
+          '-safe', '0',
+          '-i', 'final_list.txt',
+          '-c', 'copy',
+          '-y',
+          'video_only.mp4'
+        ]);
+        videoFile = 'video_only.mp4';
+        try { await ffmpeg.deleteFile('final_list.txt'); } catch {}
+      }
+
+      onProgress(0.85);
+
+      // 5. Add audio to final video
       const concatCmd = [
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'list.txt',
+        '-i', videoFile,
         '-i', 'audio.mp3',
-        '-c:v', 'copy', // Copy video (already encoded)
+        '-c:v', 'copy',
         '-c:a', 'aac',
         '-b:a', '192k',
         '-shortest',
@@ -145,14 +189,14 @@ export class RenderService {
       // 7. Cleanup
       try {
         await ffmpeg.deleteFile('audio.mp3');
-        await ffmpeg.deleteFile('list.txt');
         await ffmpeg.deleteFile('output.mp4');
         for (const i of usedIndices) {
-          await ffmpeg.deleteFile(`v${i}.mp4`);
+          try { await ffmpeg.deleteFile(`v${i}.mp4`); } catch {}
         }
-        for (const f of segmentFiles) {
-          await ffmpeg.deleteFile(f);
+        for (const f of intermediateFiles) {
+          try { await ffmpeg.deleteFile(f); } catch {}
         }
+        try { await ffmpeg.deleteFile('video_only.mp4'); } catch {}
       } catch (e) {
         console.warn("Cleanup warning:", e);
       }
