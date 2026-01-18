@@ -235,11 +235,14 @@ export class AudioAnalyzerService {
   // ============ ORIGINAL BEAT DETECTION ============
 
   async detectBeats(buffer: AudioBuffer, minEnergy: number = 0.1, sensitivity: number = 1.5): Promise<BeatMarker[]> {
-    if (!this.essentia) {
+    // TEMPORARILY DISABLED: Skip Essentia, use multi-band analysis only
+    const USE_ESSENTIA = false;
+
+    if (USE_ESSENTIA && !this.essentia) {
       await this.initEssentia();
     }
 
-    if (this.essentia) {
+    if (USE_ESSENTIA && this.essentia) {
       try {
         const channelData = buffer.getChannelData(0);
         const vectorSignal = this.essentia.arrayToVector(channelData);
