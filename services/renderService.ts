@@ -1,6 +1,6 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
-import { SyncSegment, VideoClip } from '../types';
+import { EnhancedSyncSegment, VideoClip } from '../types';
 
 export class RenderService {
   private ffmpeg: FFmpeg | null = null;
@@ -38,7 +38,7 @@ export class RenderService {
 
   async exportVideo(
     audioFile: File,
-    segments: SyncSegment[],
+    segments: EnhancedSyncSegment[],
     videoClips: VideoClip[],
     onProgress: (progress: number) => void
   ): Promise<Blob> {
@@ -50,56 +50,86 @@ export class RenderService {
     });
 
     console.log("Starting FFmpeg Render...");
+    console.log(`Processing ${segments.length} segments from ${videoClips.length} clips`);
 
-    // 1. Write Audio
-    await ffmpeg.writeFile('audio.mp3', await fetchFile(audioFile));
+    // 1. Write Audio - detect format from file extension
+    const audioExt = audioFile.name.split('.').pop()?.toLowerCase() || 'mp3';
+    const audioFilename = `audio.${audioExt}`;
+    await ffmpeg.writeFile(audioFilename, await fetchFile(audioFile));
 
     // 2. Write Video Clips
     // Only write clips that are actually used to save memory
     const usedIndices = new Set(segments.map(s => s.videoIndex));
     for (const i of usedIndices) {
         const clip = videoClips[i];
-        console.log(`Loading clip ${i}: ${clip.name}`);
-        await ffmpeg.writeFile(`clip${i}.mp4`, await fetchFile(clip.file));
+        // Detect video format from file extension
+        const videoExt = clip.name.split('.').pop()?.toLowerCase() || 'mp4';
+        console.log(`Loading clip ${i}: ${clip.name} (${videoExt})`);
+        await ffmpeg.writeFile(`clip${i}.${videoExt}`, await fetchFile(clip.file));
     }
 
-    // 3. Build Filter Complex
+    // 3. Build Filter Complex with speed ramping support
     let filterComplex = '';
-    let inputs = '';
-    
-    // -i 0 is audio
-    // -i 1 is clip0 (if used), etc.
-    // We need to map videoIndex to FFmpeg input index
-    const inputMap = new Map<number, number>();
+
+    // Map videoIndex to FFmpeg input index and track file extensions
+    const inputMap = new Map<number, { inputIdx: number; ext: string }>();
     let inputCounter = 1; // 0 is audio
 
     for (const i of usedIndices) {
-        inputs += `-i clip${i}.mp4 `;
-        inputMap.set(i, inputCounter++);
+        const clip = videoClips[i];
+        const videoExt = clip.name.split('.').pop()?.toLowerCase() || 'mp4';
+        inputMap.set(i, { inputIdx: inputCounter++, ext: videoExt });
     }
 
     segments.forEach((seg, idx) => {
-        const inputIdx = inputMap.get(seg.videoIndex);
-        // Trim segment and reset timestamps
-        // Also force scale to 1280x720 to avoid resolution mismatch errors during concatenation
-        filterComplex += `[${inputIdx}:v]trim=start=${seg.clipStartTime}:duration=${seg.duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v${idx}];`;
+        const inputInfo = inputMap.get(seg.videoIndex)!;
+        const inputIdx = inputInfo.inputIdx;
+
+        // Calculate effective duration accounting for playback speed
+        // If speed is 1.5x, we need to trim 1.5x more source video to fill the segment duration
+        const playbackSpeed = seg.playbackSpeed || 1.0;
+        const sourceDuration = seg.duration * playbackSpeed;
+
+        // Build filter chain for this segment:
+        // 1. trim - extract source portion
+        // 2. setpts - apply speed change (PTS/speed makes video faster)
+        // 3. scale/pad - normalize resolution
+
+        if (playbackSpeed !== 1.0) {
+            // With speed ramping: trim more source, then speed up/slow down
+            filterComplex += `[${inputIdx}:v]trim=start=${seg.clipStartTime}:duration=${sourceDuration},setpts=${(1/playbackSpeed).toFixed(4)}*(PTS-STARTPTS),scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v${idx}];`;
+        } else {
+            // Normal speed
+            filterComplex += `[${inputIdx}:v]trim=start=${seg.clipStartTime}:duration=${seg.duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v${idx}];`;
+        }
     });
 
     // Concatenate all segments
     filterComplex += segments.map((_, i) => `[v${i}]`).join('');
     filterComplex += `concat=n=${segments.length}:v=1:a=0[outv]`;
 
+    // Build input file list
+    const inputFiles: string[] = [];
+    for (const i of usedIndices) {
+        const info = inputMap.get(i)!;
+        inputFiles.push('-i', `clip${i}.${info.ext}`);
+    }
+
     const cmd = [
-        '-i', 'audio.mp3',
-        ...Array.from(usedIndices).map(i => ['-i', `clip${i}.mp4`]).flat(),
+        '-i', audioFilename,
+        ...inputFiles,
         '-filter_complex', filterComplex,
         '-map', '[outv]',
         '-map', '0:a', // Map audio from input 0
         '-c:v', 'libx264', // H.264
         '-preset', 'ultrafast', // Speed over size
+        '-crf', '23', // Good quality
+        '-c:a', 'aac', // AAC audio for compatibility
+        '-b:a', '192k',
         '-shortest', // Stop when shortest stream ends (usually audio)
+        '-movflags', '+faststart', // Enable fast start for web playback
         'output.mp4'
-    ].flat();
+    ];
 
     console.log("FFmpeg Command:", cmd.join(' '));
 
@@ -110,10 +140,11 @@ export class RenderService {
 
     // 5. Cleanup - Delete all files from virtual FS to free memory
     try {
-      await ffmpeg.deleteFile('audio.mp3');
+      await ffmpeg.deleteFile(audioFilename);
       await ffmpeg.deleteFile('output.mp4');
       for (const i of usedIndices) {
-        await ffmpeg.deleteFile(`clip${i}.mp4`);
+        const info = inputMap.get(i)!;
+        await ffmpeg.deleteFile(`clip${i}.${info.ext}`);
       }
       console.log("✅ FFmpeg cleanup complete");
     } catch (cleanupErr) {
