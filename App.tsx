@@ -21,6 +21,23 @@ const formatTime = (time: number) => {
   return `${min}:${sec.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
 };
 
+// Process array items in batches to avoid overwhelming the browser
+async function processBatched<T, R>(
+  items: T[],
+  batchSize: number,
+  processor: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map((item, batchIndex) => processor(item, i + batchIndex))
+    );
+    results.push(...batchResults);
+  }
+  return results;
+}
+
 function App() {
   const [step, setStep] = useState<AppStep>(AppStep.UPLOAD);
   
@@ -144,19 +161,24 @@ function App() {
 
       setVideoFiles(prev => [...prev, ...newClips]);
 
-      // Trigger Async AI Analysis with proper error handling
+      // Trigger Async AI Analysis with batched state updates
       Promise.all(
         newClips.map(async (clip) => {
           try {
             const metadata = await videoAnalysisService.analyzeClip(clip.url);
-            setVideoFiles(prev => prev.map(c =>
-                c.id === clip.id ? { ...c, metadata } : c
-            ));
+            return { clipId: clip.id, metadata };
           } catch (e) {
             console.warn(`Failed to analyze clip ${clip.name}:`, e);
+            return { clipId: clip.id, metadata: { brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true } };
           }
         })
-      );
+      ).then(results => {
+        // Batch update all metadata at once instead of 42 individual updates
+        setVideoFiles(prev => prev.map(c => {
+          const result = results.find(r => r.clipId === c.id);
+          return result ? { ...c, metadata: result.metadata } : c;
+        }));
+      });
     }
   };
 
@@ -338,8 +360,11 @@ function App() {
 
       // ========== STEP 3: Run AI Analysis on ALL Clips ==========
       console.log(`📊 Step 3/6: Analyzing ${totalClips} video clips (motion, brightness, contrast)...`);
-      const videosWithMetadata = await Promise.all(
-        videosWithDuration.map(async (clip, index) => {
+      // Process in batches of 8 to avoid overwhelming the browser
+      const videosWithMetadata = await processBatched(
+        videosWithDuration,
+        8,
+        async (clip, index) => {
           // Skip if already analyzed
           if (clip.metadata?.processed) {
             console.log(`  ✓ Clip ${index + 1}/${totalClips}: ${clip.name} (cached)`);
@@ -355,7 +380,7 @@ function App() {
             console.warn(`  ✗ Clip ${index + 1} analysis failed:`, e);
             return { ...clip, metadata: { brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true } };
           }
-        })
+        }
       );
 
       // Update state with fully analyzed clips
