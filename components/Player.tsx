@@ -83,12 +83,64 @@ const Player: React.FC<PlayerProps> = ({
   const preloadedClipIndexRef = useRef<number>(-1);
   const preloadingRef = useRef<boolean>(false);
 
+  // Store segments in ref so animation loop can access latest without restarting
+  const segmentsRef = useRef<EnhancedSyncSegment[]>(segments);
+  const videoClipsRef = useRef<VideoClip[]>(videoClips);
+
+  // Update refs when props change (doesn't restart animation loop)
+  useEffect(() => {
+    segmentsRef.current = segments;
+  }, [segments]);
+
+  useEffect(() => {
+    videoClipsRef.current = videoClips;
+  }, [videoClips]);
+
+  // Track previous segments to detect changes
+  const prevSegmentsRef = useRef<EnhancedSyncSegment[]>([]);
+  const segmentsVersionRef = useRef(0);
+
   // Initialize and preload videos for smooth playback
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
-      // Initialize to first segment's clip
-      activeClipRef.current = segments[0].videoIndex;
-      prevClipRef.current = -1;
+      // Check if segments actually changed (not just a re-render)
+      const segmentsChanged = prevSegmentsRef.current.length !== segments.length ||
+        (segments.length > 0 && prevSegmentsRef.current.length > 0 &&
+          segments[0].startTime !== prevSegmentsRef.current[0]?.startTime);
+
+      if (segmentsChanged) {
+        console.log('🔄 Segments changed, resetting player state');
+        segmentsVersionRef.current++;
+
+        // Reset preload state
+        preloadedClipIndexRef.current = -1;
+        preloadingRef.current = false;
+        nextSegmentIndexRef.current = -1;
+
+        // Reset to first segment's clip
+        activeClipRef.current = segments[0].videoIndex;
+        prevClipRef.current = -1;
+
+        // Reset all video states
+        videoRefs.current.forEach((video, idx) => {
+          if (video) {
+            video.style.opacity = idx === segments[0].videoIndex ? '1' : '0';
+            video.style.zIndex = idx === segments[0].videoIndex ? '10' : '0';
+            video.style.transform = 'scale(1)';
+            video.style.filter = '';
+          }
+        });
+
+        // Set the first video to the correct position
+        const firstVideo = videoRefs.current[segments[0].videoIndex];
+        if (firstVideo) {
+          firstVideo.currentTime = segments[0].clipStartTime;
+        }
+
+        setDisplayClipIndex(segments[0].videoIndex);
+      }
+
+      prevSegmentsRef.current = segments;
 
       // Preload first 3 unique video clips used in segments for smooth start
       const preloadVideos = async () => {
@@ -189,16 +241,20 @@ const Player: React.FC<PlayerProps> = ({
       onTimeUpdate(currentTime);
 
       // FX Decay
-      if (fxState.current.flash > 0) fxState.current.flash *= 0.85; 
+      if (fxState.current.flash > 0) fxState.current.flash *= 0.85;
       if (fxState.current.glitch > 0) fxState.current.glitch -= 1;
-      
+
       // Zoom return to 1.0 (slow ease out)
       if (fxState.current.zoom > 1.0) fxState.current.zoom = 1.0 + (fxState.current.zoom - 1.0) * 0.95;
       if (fxState.current.zoom < 1.001) fxState.current.zoom = 1.0;
 
-      if (segments.length > 0) {
+      // Use refs to get latest segments/clips without restarting animation loop
+      const currentSegments = segmentsRef.current;
+      const currentVideoClips = videoClipsRef.current;
+
+      if (currentSegments.length > 0) {
         // Use binary search for O(log n) lookup instead of O(n) .find()
-        const currentSegment = findSegmentAtTime(segments, currentTime);
+        const currentSegment = findSegmentAtTime(currentSegments, currentTime);
 
         if (currentSegment) {
           const timeInSegment = currentTime - currentSegment.startTime;
@@ -265,9 +321,9 @@ const Player: React.FC<PlayerProps> = ({
              // --- DURING SEGMENT RENDER ---
              const activeVideo = videoRefs.current[activeClipIndex];
              const prevVideo = videoRefs.current[prevClipIndex];
-             
+
              // 1. Sync Active Video - LET IT PLAY NATURALLY, only correct major drift
-             const clipData = videoClips[activeClipIndex];
+             const clipData = currentVideoClips[activeClipIndex];
              if (activeVideo && clipData) {
                  const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
                  const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
@@ -351,12 +407,12 @@ const Player: React.FC<PlayerProps> = ({
 
              // --- PREDICTIVE PRELOADING (Look-ahead) ---
              // Find next segment
-             const currentSegmentIndex = segments.findIndex(seg =>
+             const currentSegmentIndex = currentSegments.findIndex(seg =>
                currentTime >= seg.startTime && currentTime < seg.endTime
              );
 
-             if (currentSegmentIndex >= 0 && currentSegmentIndex < segments.length - 1) {
-               const nextSegment = segments[currentSegmentIndex + 1];
+             if (currentSegmentIndex >= 0 && currentSegmentIndex < currentSegments.length - 1) {
+               const nextSegment = currentSegments[currentSegmentIndex + 1];
                const timeUntilNextCut = nextSegment.startTime - currentTime;
 
                // Start preloading 500ms before cut
@@ -427,7 +483,7 @@ const Player: React.FC<PlayerProps> = ({
            // Simple draw for recorder
            if (prevClipRef.current !== -1 && prevClipRef.current !== activeClipRef.current) {
                const prevVideo = videoRefs.current[prevClipRef.current];
-               const currentSeg = findSegmentAtTime(segments, currentTime);
+               const currentSeg = findSegmentAtTime(currentSegments, currentTime);
                if (prevVideo && currentSeg?.transition === TransitionType.CROSSFADE) {
                     const time = currentTime - currentSeg.startTime;
                     if (time < 0.5) {
@@ -458,26 +514,37 @@ const Player: React.FC<PlayerProps> = ({
       }
       requestRef.current = requestAnimationFrame(animate);
     } else {
-      // Wait for any pending play promise before pausing
+      // IMMEDIATELY stop animation loop first
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current);
+        requestRef.current = null;
+      }
+
+      // Pause all videos immediately
+      videoRefs.current.forEach(v => {
+        if (v) {
+          v.pause();
+        }
+      });
+
+      // Then handle audio pause (with promise safety)
       if (playPromiseRef.current) {
         playPromiseRef.current.then(() => {
           audio.pause();
         }).catch(() => {
-          // Play was already interrupted, safe to pause
           audio.pause();
         });
         playPromiseRef.current = null;
       } else {
         audio.pause();
       }
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      videoRefs.current.forEach(v => v && v.pause());
     }
 
     return () => {
         if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [isPlaying, segments, videoClips]); 
+  // Only restart animation loop when isPlaying changes - segments/clips use refs
+  }, [isPlaying]); 
 
   // 4. Handle External Seek
   useEffect(() => {
@@ -485,8 +552,8 @@ const Player: React.FC<PlayerProps> = ({
       audioRef.current.currentTime = seekTime;
       onTimeUpdate(seekTime);
 
-      // Use binary search for segment lookup
-      const targetSegment = findSegmentAtTime(segments, seekTime);
+      // Use binary search for segment lookup (use ref for latest segments)
+      const targetSegment = findSegmentAtTime(segmentsRef.current, seekTime);
       if (targetSegment) {
          // Hide current video
          const currentVideo = videoRefs.current[activeClipRef.current];
@@ -505,7 +572,7 @@ const Player: React.FC<PlayerProps> = ({
          fxState.current.glitch = 0;
 
          const videoEl = videoRefs.current[targetSegment.videoIndex];
-         const clipData = videoClips[targetSegment.videoIndex];
+         const clipData = videoClipsRef.current[targetSegment.videoIndex];
 
          if(videoEl && clipData) {
              const timeInSegment = seekTime - targetSegment.startTime;
@@ -520,7 +587,8 @@ const Player: React.FC<PlayerProps> = ({
          }
       }
     }
-  }, [seekTime, segments, videoClips]);
+  // Only react to seekTime changes - segments/clips use refs
+  }, [seekTime]);
 
   if (!isReady && videoClips.length > 0) {
     return (

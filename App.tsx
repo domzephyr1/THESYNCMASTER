@@ -419,12 +419,6 @@ function App() {
   };
 
   const handleReSync = useCallback(async () => {
-    console.log("🔘 RE-ANALYZE button clicked!", {
-      hasAudioBuffer: !!audioBuffer,
-      videoFilesCount: videoFiles.length,
-      isAnalyzing
-    });
-
     if (!audioBuffer) {
         console.warn("handleReSync: No audioBuffer available");
         showToast("No audio loaded - please reload the page");
@@ -436,6 +430,15 @@ function App() {
       clearTimeout(autoResyncTimerRef.current);
       autoResyncTimerRef.current = null;
     }
+
+    // ALWAYS pause and reset - use longer delay to ensure state propagates
+    setIsPlaying(false);
+    setSeekSignal(0);
+
+    // Wait for React to flush state updates and player to actually stop
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    setSeekSignal(null);
 
     console.log("🔄 Re-analyzing beats...", { minEnergy, peakSensitivity });
     setIsAnalyzing(true);
@@ -469,7 +472,7 @@ function App() {
     } finally {
         setIsAnalyzing(false);
     }
-  }, [audioBuffer, minEnergy, peakSensitivity, videoFiles, enableSpeedRamping, enableSmartReorder, currentPreset, isAnalyzing]);
+  }, [audioBuffer, minEnergy, peakSensitivity, videoFiles, enableSpeedRamping, enableSmartReorder, currentPreset, isAnalyzing, isPlaying]);
 
   // Auto Re-Sync DISABLED - only re-analyze when user clicks the button
   // useEffect(() => {
