@@ -1,14 +1,24 @@
-import { BeatMarker, DropZone, PhraseData } from '../types';
+import { BeatMarker, DropZone, PhraseData, EssentiaInstance, EssentiaWASMModule } from '../types';
 
-declare var EssentiaWASM: any;
-declare var Essentia: any;
+// Essentia.js global declarations
+declare const EssentiaWASM: (() => Promise<EssentiaWASMModule>) | undefined;
+declare const Essentia: (new (wasm: EssentiaWASMModule) => EssentiaInstance) | undefined;
+
+// WebKit AudioContext type
+interface WebkitWindow extends Window {
+  webkitAudioContext?: typeof AudioContext;
+}
 
 export class AudioAnalyzerService {
   private audioContext: AudioContext;
-  private essentia: any = null;
+  private essentia: EssentiaInstance | null = null;
 
   constructor() {
-    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const AudioContextClass = window.AudioContext || (window as WebkitWindow).webkitAudioContext;
+    if (!AudioContextClass) {
+      throw new Error('AudioContext is not supported in this browser');
+    }
+    this.audioContext = new AudioContextClass();
   }
 
   private async initEssentia() {

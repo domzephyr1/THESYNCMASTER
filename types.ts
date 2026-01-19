@@ -117,3 +117,29 @@ export interface MontageResult {
   dropCount: number;
   heroCount: number;
 }
+
+// Essentia.js Types
+export interface EssentiaVector {
+  delete?: () => void;
+}
+
+export interface EssentiaRhythmResult {
+  ticks: EssentiaVector & ArrayLike<number>;
+  bpm: number;
+}
+
+export interface EssentiaInstance {
+  arrayToVector: (data: Float32Array) => EssentiaVector;
+  vectorToArray: (vector: EssentiaVector) => ArrayLike<number>;
+  RhythmExtractor2013: (signal: EssentiaVector) => EssentiaRhythmResult;
+}
+
+export interface EssentiaWASMModule {
+  EssentiaWASM: new () => EssentiaInstance;
+}
+
+// HTMLMediaElement capture stream types
+export interface MediaElementWithCapture extends HTMLMediaElement {
+  captureStream?: () => MediaStream;
+  mozCaptureStream?: () => MediaStream;
+}
