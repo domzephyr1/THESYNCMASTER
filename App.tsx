@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { AppStep, BeatMarker, VideoClip, EnhancedSyncSegment, StylePreset, PhraseData } from './types';
 import { audioService } from './services/audioAnalysis';
 import { videoAnalysisService } from './services/videoAnalysis';
@@ -254,7 +254,7 @@ function App() {
     }
   }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset, phraseData]);
 
-  const handleShuffle = () => {
+  const handleShuffle = useCallback(() => {
      if (beats.length > 0 && videoFiles.length > 0 && duration > 0) {
         const result = segmentationService.generateMontage(beats, videoFiles, duration, {
           enableSpeedRamping,
@@ -265,26 +265,28 @@ function App() {
         setSegments(result.segments);
         setSyncScore(result.averageScore);
     }
-  };
+  }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset, phraseData]);
 
-  const handleBeatToggle = (time: number) => {
-    // Check for nearby beat (0.15s window)
-    const threshold = 0.15;
-    const existingIndex = beats.findIndex(b => Math.abs(b.time - time) < threshold);
+  const handleBeatToggle = useCallback((time: number) => {
+    setBeats(prevBeats => {
+      // Check for nearby beat (0.15s window)
+      const threshold = 0.15;
+      const existingIndex = prevBeats.findIndex(b => Math.abs(b.time - time) < threshold);
 
-    let newBeats = [...beats];
-    if (existingIndex >= 0) {
-        // Remove
-        newBeats.splice(existingIndex, 1);
-    } else {
-        // Add
-        newBeats.push({ time, intensity: 1.0 });
-    }
-    
-    // Sort
-    newBeats.sort((a, b) => a.time - b.time);
-    setBeats(newBeats);
-  };
+      let newBeats = [...prevBeats];
+      if (existingIndex >= 0) {
+          // Remove
+          newBeats.splice(existingIndex, 1);
+      } else {
+          // Add
+          newBeats.push({ time, intensity: 1.0 });
+      }
+
+      // Sort
+      newBeats.sort((a, b) => a.time - b.time);
+      return newBeats;
+    });
+  }, []);
 
   const startAnalysis = async () => {
     if (!audioFile) return;
@@ -453,9 +455,27 @@ function App() {
       setStep(AppStep.PREVIEW);
     } catch (err) {
       console.error("Analysis failed", err);
-      alert("Could not decode audio. Please try a different file.");
+
+      // Clean up any created URLs to prevent memory leaks on error
+      urlsToRevoke.current.forEach(url => URL.revokeObjectURL(url));
+      urlsToRevoke.current = [];
+
+      // Reset all state
+      setAudioFile(null);
+      setAudioUrl('');
+      setAudioBuffer(null);
+      setVideoFiles([]);
+      setBeats([]);
+      setSegments([]);
+      setWaveformData([]);
+      setDuration(0);
+
       setIsAnalyzing(false);
       setStep(AppStep.UPLOAD);
+
+      // Show more helpful error message
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      alert(`Analysis failed: ${errorMessage}\n\nPlease try a different audio file or check that your video files are valid.`);
     }
   };
 
@@ -541,18 +561,18 @@ function App() {
       }
   };
 
-  const handleSeek = (time: number) => {
+  const handleSeek = useCallback((time: number) => {
     if (isRecording) return;
     setSeekSignal(time);
     setCurrentTime(time);
-  };
+  }, [isRecording]);
 
   // Track auto re-sync timer to prevent race conditions
   const autoResyncTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Beat Snap Preview: Play 2-second preview around the beat
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const handleBeatPreview = (beatTime: number) => {
+  const handleBeatPreview = useCallback((beatTime: number) => {
     if (isRecording) return;
 
     // Clear any existing preview timeout
@@ -573,7 +593,7 @@ function App() {
       setIsPlaying(false);
       previewTimeoutRef.current = null;
     }, 2000);
-  };
+  }, [isRecording]);
 
   const startRecordingFlow = () => {
     setShowExportModal(false);
@@ -586,10 +606,10 @@ function App() {
     }, 500);
   };
 
-  const handleRecordingComplete = (blob: Blob) => {
+  const handleRecordingComplete = useCallback((blob: Blob) => {
     setIsRecording(false);
     setIsPlaying(false);
-    
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.style.display = 'none';
@@ -597,13 +617,13 @@ function App() {
     a.download = `syncmaster_record_${Date.now()}.webm`;
     document.body.appendChild(a);
     a.click();
-    
+
     setTimeout(() => {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
-      alert("Recording Saved!");
+      showToast("Recording saved!");
     }, 100);
-  };
+  }, []);
 
   // --- FFmpeg Export ---
   const handleFFmpegExport = async () => {
@@ -630,8 +650,21 @@ function App() {
 
     } catch (e) {
         console.error(e);
-        alert("Render failed. Most likely cause: This browser/host does not support SharedArrayBuffer (COOP/COEP headers missing). Try the 'Quick Record' option.");
         setIsRendering(false);
+
+        // Provide more helpful error message with recovery option
+        const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+        const isSharedArrayBufferError = errorMessage.includes('SharedArrayBuffer') ||
+          errorMessage.includes('COOP') || errorMessage.includes('COEP');
+
+        if (isSharedArrayBufferError) {
+          showToast("FFmpeg requires special browser headers. Use Quick Record instead.", 4000);
+        } else {
+          showToast(`Render failed: ${errorMessage.slice(0, 50)}...`, 4000);
+        }
+
+        // Re-open export modal so user can try Quick Record
+        setTimeout(() => setShowExportModal(true), 500);
     }
   };
 
