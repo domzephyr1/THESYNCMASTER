@@ -57,12 +57,14 @@ self.onmessage = function(e) {
     }
   }
 
+  // Normalize motion by number of grid cells (16x16 = 256)
+  const gridCells = 16 * 16;
   self.postMessage({
     brightness: avgBrightness,
     variance,
-    motion: motionSum,
-    horizontalBias: horizontalMotion,
-    verticalBias: verticalMotion
+    motion: motionSum / gridCells,
+    horizontalBias: horizontalMotion / gridCells,
+    verticalBias: verticalMotion / gridCells
   });
 };
 `;
@@ -207,11 +209,17 @@ export class VideoAnalysisService {
             else if (avgMotion > 0.3) dominantMotionDirection = 'chaotic';
           }
 
+          // Scale motion to 0-1 range (typical values are 0.01-0.3 after normalization)
+          // Using a multiplier of 5 gives good spread across the range
+          const scaledMotion = Math.min(1, avgMotion * 5);
+
+          console.log(`  Motion debug: raw=${avgMotion.toFixed(4)}, scaled=${scaledMotion.toFixed(2)}`);
+
           cleanup();
           resolve({
             brightness: totalBrightness / frameCount,
             contrast: Math.min(1, (totalVariance / frameCount) * 4),
-            motionEnergy: Math.min(1, avgMotion * 3),
+            motionEnergy: scaledMotion,
             dominantMotionDirection,
             peakMotionTimestamp: maxMotionTime,
             processed: true
