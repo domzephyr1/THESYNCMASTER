@@ -86,6 +86,8 @@ const Player: React.FC<PlayerProps> = ({
   // Store segments in ref so animation loop can access latest without restarting
   const segmentsRef = useRef<EnhancedSyncSegment[]>(segments);
   const videoClipsRef = useRef<VideoClip[]>(videoClips);
+  // Store callback in ref to avoid stale closure issues
+  const onTimeUpdateRef = useRef(onTimeUpdate);
 
   // Update refs when props change (doesn't restart animation loop)
   useEffect(() => {
@@ -95,6 +97,10 @@ const Player: React.FC<PlayerProps> = ({
   useEffect(() => {
     videoClipsRef.current = videoClips;
   }, [videoClips]);
+
+  useEffect(() => {
+    onTimeUpdateRef.current = onTimeUpdate;
+  }, [onTimeUpdate]);
 
   // Track previous segments to detect changes
   const prevSegmentsRef = useRef<EnhancedSyncSegment[]>([]);
@@ -238,7 +244,7 @@ const Player: React.FC<PlayerProps> = ({
     const animate = () => {
       if (!audio) return;
       const currentTime = audio.currentTime;
-      onTimeUpdate(currentTime);
+      onTimeUpdateRef.current(currentTime);
 
       // FX Decay
       if (fxState.current.flash > 0) fxState.current.flash *= 0.85;
@@ -550,7 +556,7 @@ const Player: React.FC<PlayerProps> = ({
   useEffect(() => {
     if (seekTime !== null && audioRef.current) {
       audioRef.current.currentTime = seekTime;
-      onTimeUpdate(seekTime);
+      onTimeUpdateRef.current(seekTime);
 
       // Use binary search for segment lookup (use ref for latest segments)
       const targetSegment = findSegmentAtTime(segmentsRef.current, seekTime);

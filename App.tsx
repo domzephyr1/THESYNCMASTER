@@ -112,13 +112,23 @@ function App() {
         urlsToRevoke.current.push(url); // Track for cleanup
         const clipId = Math.random().toString(36).substr(2, 9);
 
-        // Metadata load for duration
+        // Metadata load for duration - properly clean up temp video element
         const tempVideo = document.createElement('video');
         tempVideo.src = url;
         tempVideo.onloadedmetadata = () => {
-           setVideoFiles(prev => prev.map(c =>
-             c.id === clipId ? { ...c, duration: tempVideo.duration, trimEnd: tempVideo.duration } : c
-           ));
+          const videoDuration = tempVideo.duration;
+          // Clean up temp video element immediately after getting metadata
+          tempVideo.src = '';
+          tempVideo.load();
+
+          setVideoFiles(prev => prev.map(c =>
+            c.id === clipId ? { ...c, duration: videoDuration, trimEnd: videoDuration } : c
+          ));
+        };
+        tempVideo.onerror = () => {
+          // Clean up on error too
+          tempVideo.src = '';
+          tempVideo.load();
         };
 
         return {
@@ -301,12 +311,25 @@ function App() {
             }
             const video = document.createElement('video');
             video.src = clip.url;
+
+            const cleanup = () => {
+              video.src = '';
+              video.load();
+            };
+
             video.onloadedmetadata = () => {
               const updatedClip = { ...clip, duration: video.duration, trimEnd: video.duration };
+              cleanup();
               resolve(updatedClip);
             };
-            video.onerror = () => resolve(clip);
-            setTimeout(() => resolve(clip), 5000); // 5s timeout
+            video.onerror = () => {
+              cleanup();
+              resolve(clip);
+            };
+            setTimeout(() => {
+              cleanup();
+              resolve(clip);
+            }, 5000); // 5s timeout
           });
         })
       );
@@ -371,9 +394,27 @@ function App() {
             video.preload = 'auto';
             video.muted = true;
 
+            // Cleanup function to free temp video element
+            const cleanup = () => {
+              video.onseeked = null;
+              video.oncanplaythrough = null;
+              video.onerror = null;
+              video.src = '';
+              video.load();
+            };
+
             // Seek to a few key positions to force buffering
             const seekPositions = [0, 0.25, 0.5, 0.75].map(p => p * (clip.duration || 1));
             let currentSeek = 0;
+            let resolved = false;
+
+            const doResolve = () => {
+              if (!resolved) {
+                resolved = true;
+                cleanup();
+                resolve();
+              }
+            };
 
             const doSeek = () => {
               if (currentSeek < seekPositions.length) {
@@ -381,7 +422,7 @@ function App() {
                 currentSeek++;
               } else {
                 console.log(`  ✓ Buffered clip ${index + 1}/${totalClips}`);
-                resolve();
+                doResolve();
               }
             };
 
@@ -391,13 +432,13 @@ function App() {
             };
             video.onerror = () => {
               console.warn(`  ✗ Failed to buffer clip ${index + 1}`);
-              resolve();
+              doResolve();
             };
 
             // Timeout fallback - 3s per clip
             setTimeout(() => {
               console.log(`  ⏱ Clip ${index + 1}/${totalClips} buffer timeout (continuing...)`);
-              resolve();
+              doResolve();
             }, 3000);
 
             video.load();

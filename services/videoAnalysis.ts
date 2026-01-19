@@ -69,13 +69,27 @@ self.onmessage = function(e) {
 
 export class VideoAnalysisService {
   private worker: Worker | null = null;
+  private workerBlobUrl: string | null = null;
 
   constructor() {
     try {
       const blob = new Blob([workerCode], { type: 'application/javascript' });
-      this.worker = new Worker(URL.createObjectURL(blob));
+      this.workerBlobUrl = URL.createObjectURL(blob);
+      this.worker = new Worker(this.workerBlobUrl);
     } catch (e) {
       console.warn("Worker creation failed, falling back to main thread", e);
+    }
+  }
+
+  // Cleanup method to terminate worker and revoke blob URL
+  destroy() {
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    if (this.workerBlobUrl) {
+      URL.revokeObjectURL(this.workerBlobUrl);
+      this.workerBlobUrl = null;
     }
   }
 
@@ -90,7 +104,16 @@ export class VideoAnalysisService {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
+      // Cleanup function to free video element memory
+      const cleanup = () => {
+        video.onloadedmetadata = null;
+        video.onerror = null;
+        video.src = '';
+        video.load();
+      };
+
       if (!ctx) {
+        cleanup();
         resolve({ brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true });
         return;
       }
@@ -100,7 +123,8 @@ export class VideoAnalysisService {
         canvas.height = 90;
 
         try {
-          const sampleTimes = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].map(p => p * video.duration);
+          // Sample at multiple positions through the video for brightness/contrast
+          const positions = [0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9];
 
           let totalBrightness = 0;
           let totalVariance = 0;
@@ -109,13 +133,14 @@ export class VideoAnalysisService {
           let maxMotionTime = 0;
           let horizontalBias = 0;
           let verticalBias = 0;
+          let motionSamples = 0;
 
-          let prevFrameData: Uint8ClampedArray | null = null;
+          // For each position, sample brightness AND motion (with closely-spaced frames)
+          for (const pos of positions) {
+            const baseTime = pos * video.duration;
 
-          for (let i = 0; i < sampleTimes.length; i++) {
-            const time = sampleTimes[i];
-            video.currentTime = time;
-
+            // Sample brightness at this position
+            video.currentTime = baseTime;
             await new Promise<void>(r => {
               const onSeek = () => {
                 video.removeEventListener('seeked', onSeek);
@@ -125,34 +150,50 @@ export class VideoAnalysisService {
             });
 
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const currentFrameData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            const frame1Data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 
-            const result = await this.analyzeFrame(
-              ctx,
-              canvas.width,
-              canvas.height,
-              prevFrameData
-            );
+            const result1 = await this.analyzeFrame(ctx, canvas.width, canvas.height, null);
+            totalBrightness += result1.brightness;
+            totalVariance += result1.variance;
 
-            totalBrightness += result.brightness;
-            totalVariance += result.variance;
+            // Now sample motion by getting a frame ~0.1 seconds later
+            const motionOffset = 0.1; // 100ms between frames for motion detection
+            const nextTime = Math.min(baseTime + motionOffset, video.duration - 0.01);
 
-            if (prevFrameData) {
-              totalMotion += result.motion;
-              horizontalBias += result.horizontalBias;
-              verticalBias += result.verticalBias;
+            if (nextTime > baseTime) {
+              video.currentTime = nextTime;
+              await new Promise<void>(r => {
+                const onSeek = () => {
+                  video.removeEventListener('seeked', onSeek);
+                  r();
+                };
+                video.addEventListener('seeked', onSeek);
+              });
 
-              if (result.motion > maxMotion) {
-                maxMotion = result.motion;
-                maxMotionTime = time;
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+              // Analyze motion between the two frames
+              const result2 = await this.analyzeFrame(
+                ctx,
+                canvas.width,
+                canvas.height,
+                new Uint8ClampedArray(frame1Data)
+              );
+
+              totalMotion += result2.motion;
+              horizontalBias += result2.horizontalBias;
+              verticalBias += result2.verticalBias;
+              motionSamples++;
+
+              if (result2.motion > maxMotion) {
+                maxMotion = result2.motion;
+                maxMotionTime = baseTime;
               }
             }
-
-            prevFrameData = new Uint8ClampedArray(currentFrameData);
           }
 
-          const frameCount = sampleTimes.length;
-          const motionFrameCount = frameCount - 1;
+          const frameCount = positions.length;
+          const motionFrameCount = Math.max(1, motionSamples);
 
           let dominantMotionDirection: 'static' | 'horizontal' | 'vertical' | 'chaotic' = 'static';
           const avgMotion = totalMotion / motionFrameCount;
@@ -166,6 +207,7 @@ export class VideoAnalysisService {
             else if (avgMotion > 0.3) dominantMotionDirection = 'chaotic';
           }
 
+          cleanup();
           resolve({
             brightness: totalBrightness / frameCount,
             contrast: Math.min(1, (totalVariance / frameCount) * 4),
@@ -177,11 +219,13 @@ export class VideoAnalysisService {
 
         } catch (e) {
           console.warn("Video analysis failed", e);
+          cleanup();
           resolve({ brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true });
         }
       };
 
       video.onerror = () => {
+        cleanup();
         resolve({ brightness: 0.5, contrast: 0.5, motionEnergy: 0.5, processed: true });
       };
     });
@@ -203,11 +247,17 @@ export class VideoAnalysisService {
         };
         this.worker?.addEventListener('message', handler);
 
-        const transferList: ArrayBuffer[] = [frame.data.buffer];
-        const message: any = { data: frame.data, width, height };
+        // Create copies of the data to transfer to the worker
+        // We need to copy because transferring detaches the original buffer
+        const dataCopy = new Uint8ClampedArray(frame.data);
+        const transferList: ArrayBuffer[] = [dataCopy.buffer];
+        const message: any = { data: dataCopy, width, height };
 
         if (prevData) {
-          message.prevData = prevData;
+          // Copy prevData as well and transfer it
+          const prevDataCopy = new Uint8ClampedArray(prevData);
+          message.prevData = prevDataCopy;
+          transferList.push(prevDataCopy.buffer);
         }
 
         this.worker?.postMessage(message, transferList);
