@@ -63,10 +63,10 @@ export const STYLE_PRESETS: Record<string, StylePreset> = {
     name: 'Music Video',
     description: 'Balanced cuts synced to rhythm',
     minEnergy: 0.2,
-    sensitivity: 2.5,
+    sensitivity: 2.0,
     speedRamping: true,
-    minSegmentBeats: 1,
-    maxSegmentBeats: 4,
+    minSegmentBeats: 2,
+    maxSegmentBeats: 8,
     transitionWeights: {
       [TransitionType.CUT]: 0.5,
       [TransitionType.CROSSFADE]: 0.2,
