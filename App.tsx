@@ -8,6 +8,7 @@ import { STYLE_PRESETS, getPresetList } from './services/presetService';
 import { sceneDetectionService, SceneMarker } from './services/sceneDetectionService';
 import FileUpload from './components/FileUpload';
 import Timeline from './components/Timeline';
+import SegmentTrack from './components/SegmentTrack';
 import Player from './components/Player';
 import ClipManager from './components/ClipManager';
 import VideoTrimmer from './components/VideoTrimmer';
@@ -620,6 +621,17 @@ function App() {
     }, 2000);
   }, [isRecording]);
 
+  // Handle segment updates from SegmentTrack editor
+  const handleSegmentUpdate = useCallback((index: number, updates: Partial<EnhancedSyncSegment>) => {
+    setSegments(prev => {
+      const newSegments = [...prev];
+      if (index >= 0 && index < newSegments.length) {
+        newSegments[index] = { ...newSegments[index], ...updates };
+      }
+      return newSegments;
+    });
+  }, []);
+
   const startRecordingFlow = () => {
     setShowExportModal(false);
     setSeekSignal(0);
@@ -862,6 +874,18 @@ function App() {
                 onBeatToggle={handleBeatToggle}
                 onBeatPreview={handleBeatPreview}
               />
+
+              {/* Segment Track Editor */}
+              <div className="mt-3">
+                <SegmentTrack
+                  segments={segments}
+                  videoClips={videoFiles}
+                  duration={duration}
+                  currentTime={currentTime}
+                  onSegmentUpdate={handleSegmentUpdate}
+                  onSeek={handleSeek}
+                />
+              </div>
 
               {/* DEBUG: Timeline Data Check */}
               {process.env.NODE_ENV === 'development' && (
