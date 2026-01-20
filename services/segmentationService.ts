@@ -251,8 +251,20 @@ export class SegmentationService {
     const lastSegment = existingSegments[existingSegments.length - 1];
     const lastUsedIndex = lastSegment?.videoIndex ?? -1;
 
+    // Get the last 2 used indices to prevent back-to-back and near-repeats
+    const recentIndices = existingSegments.slice(-2).map(s => s.videoIndex);
+
     const scored = clips.map((clip, index) => {
+      // Hard block: never use same clip as previous (unless only 1 clip available)
+      if (clips.length > 1 && index === lastUsedIndex) {
+        return { index, score: -1000 };
+      }
       let score = 100;
+
+      // Extra penalty for clip used 2 segments ago (avoid A-B-A pattern)
+      if (clips.length > 2 && recentIndices.length >= 2 && index === recentIndices[0]) {
+        score -= 75;
+      }
 
       // Penalize recent use
       const lastTime = lastUsedTime.get(index) || -Infinity;

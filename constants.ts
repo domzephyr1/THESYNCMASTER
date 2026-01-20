@@ -52,14 +52,14 @@ export const PLAYBACK = {
 
 // --- Clip Selection ---
 export const CLIP_SELECTION = {
-  /** Penalty for using same clip as previous segment */
-  SAME_CLIP_PENALTY: 50,
+  /** Penalty for using same clip as previous segment (very high to prevent back-to-back) */
+  SAME_CLIP_PENALTY: 200,
   /** Time window to penalize recently used clips (seconds) */
-  RECENT_USE_WINDOW: 5,
+  RECENT_USE_WINDOW: 15,
   /** Penalty multiplier for recent use */
-  RECENT_USE_PENALTY_MULTIPLIER: 10,
-  /** Penalty per use count */
-  OVERUSE_PENALTY: 5,
+  RECENT_USE_PENALTY_MULTIPLIER: 15,
+  /** Penalty per use count (higher = more variety) */
+  OVERUSE_PENALTY: 20,
   /** Bonus for motion matching */
   MOTION_MATCH_BONUS: 25,
   /** Bonus for hero clips at hero moments */
@@ -68,8 +68,8 @@ export const CLIP_SELECTION = {
   DROP_HIGH_MOTION_BONUS: 30,
   /** Bonus for brightness similarity (smart reorder) */
   BRIGHTNESS_SIMILARITY_BONUS: 15,
-  /** Percentage of clips to consider as top candidates */
-  TOP_CANDIDATES_PERCENTAGE: 0.5,
+  /** Percentage of clips to consider as top candidates (lower = more selective) */
+  TOP_CANDIDATES_PERCENTAGE: 0.25,
   /** Minimum top candidates to consider */
   MIN_TOP_CANDIDATES: 3,
 } as const;
