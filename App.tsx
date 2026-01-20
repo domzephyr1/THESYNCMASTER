@@ -589,6 +589,11 @@ function App() {
 
   const handleSeek = useCallback((time: number) => {
     if (isRecording) return;
+    // Guard against invalid time values
+    if (!isFinite(time) || time < 0) {
+      console.warn('Invalid seek time:', time);
+      return;
+    }
     setSeekSignal(time);
     setCurrentTime(time);
   }, [isRecording]);

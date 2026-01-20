@@ -55,8 +55,12 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
   const [resizing, setResizing] = useState<{ index: number; edge: 'start' | 'end' } | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
 
-  // Calculate position percentage
-  const getPositionPercent = (time: number) => (time / duration) * 100;
+  // Calculate position percentage (guard against division by zero)
+  const getPositionPercent = (time: number) => {
+    if (!duration || !isFinite(duration) || duration <= 0) return 0;
+    if (!isFinite(time)) return 0;
+    return (time / duration) * 100;
+  };
 
   // Handle segment click
   const handleSegmentClick = (index: number, e: React.MouseEvent) => {
@@ -75,11 +79,12 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
   // Handle track click (seek)
   const handleTrackClick = (e: React.MouseEvent) => {
     if (!trackRef.current || resizing) return;
+    if (!duration || !isFinite(duration) || duration <= 0) return;
     const rect = trackRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const percent = x / rect.width;
     const time = percent * duration;
-    if (onSeek) onSeek(time);
+    if (isFinite(time) && onSeek) onSeek(time);
   };
 
   // Handle clip change
@@ -108,12 +113,16 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
   // Handle resize move
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!resizing || !trackRef.current) return;
+    if (!duration || !isFinite(duration) || duration <= 0) return;
 
     const rect = trackRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const newTime = (x / rect.width) * duration;
 
+    if (!isFinite(newTime)) return;
+
     const segment = segments[resizing.index];
+    if (!segment) return;
     const prevSegment = segments[resizing.index - 1];
     const nextSegment = segments[resizing.index + 1];
 
@@ -124,6 +133,9 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
       const minTime = prevSegment ? prevSegment.startTime + minDuration : 0;
       const maxTime = segment.endTime - minDuration;
       const clampedTime = Math.max(minTime, Math.min(newTime, maxTime));
+
+      // Guard against non-finite values
+      if (!isFinite(clampedTime)) return;
 
       // Update current segment start and previous segment end
       onSegmentUpdate(resizing.index, {
@@ -141,6 +153,9 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
       const minTime = segment.startTime + minDuration;
       const maxTime = nextSegment ? nextSegment.endTime - minDuration : duration;
       const clampedTime = Math.max(minTime, Math.min(newTime, maxTime));
+
+      // Guard against non-finite values
+      if (!isFinite(clampedTime)) return;
 
       // Update current segment end and next segment start
       onSegmentUpdate(resizing.index, {
@@ -175,6 +190,24 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
 
   const playheadPos = getPositionPercent(currentTime);
 
+  // Early return if no valid data
+  if (!segments || segments.length === 0 || !duration || !isFinite(duration) || duration <= 0) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs text-slate-400">
+          <span className="flex items-center gap-1">
+            <Film className="w-3 h-3" />
+            Segment Track
+          </span>
+          <span>No segments</span>
+        </div>
+        <div className="h-16 bg-slate-900 rounded-lg border border-slate-700 flex items-center justify-center text-slate-600 text-sm">
+          Generate sync to see segments
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-slate-400">
@@ -193,10 +226,21 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
       >
         {/* Segments */}
         {segments.map((segment, index) => {
+          // Skip segments with invalid data
+          if (!segment || !isFinite(segment.startTime) || !isFinite(segment.endTime)) {
+            return null;
+          }
+
           const left = getPositionPercent(segment.startTime);
           const width = getPositionPercent(segment.endTime) - left;
+
+          // Skip if width is invalid
+          if (!isFinite(left) || !isFinite(width) || width <= 0) {
+            return null;
+          }
+
           const isSelected = selectedSegment === index;
-          const clipColor = getClipColor(segment.videoIndex);
+          const clipColor = getClipColor(segment.videoIndex ?? 0);
 
           return (
             <div
@@ -207,7 +251,7 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
               `}
               style={{ left: `${left}%`, width: `${width}%`, minWidth: '4px' }}
               onClick={(e) => handleSegmentClick(index, e)}
-              title={`Clip ${segment.videoIndex + 1} | ${TRANSITION_LABELS[segment.transition]} | ${segment.duration.toFixed(2)}s`}
+              title={`Clip ${(segment.videoIndex ?? 0) + 1} | ${TRANSITION_LABELS[segment.transition] || 'Cut'} | ${(segment.duration ?? 0).toFixed(2)}s`}
             >
               {/* Resize handles */}
               <div
@@ -282,7 +326,7 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
                       key={clip.id}
                       onClick={() => handleClipChange(idx)}
                       className={`w-full text-left px-2 py-1 text-xs rounded transition-colors
-                        ${idx === segments[selectedSegment].videoIndex
+                        ${idx === segments[selectedSegment]?.videoIndex
                           ? 'bg-cyan-600 text-white'
                           : 'text-slate-300 hover:bg-slate-700'}`}
                     >
@@ -312,7 +356,7 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
                       key={t}
                       onClick={() => handleTransitionChange(t)}
                       className={`w-full text-left px-2 py-1 text-xs rounded transition-colors flex items-center gap-2
-                        ${t === segments[selectedSegment].transition
+                        ${t === segments[selectedSegment]?.transition
                           ? 'bg-purple-600 text-white'
                           : 'text-slate-300 hover:bg-slate-700'}`}
                     >
@@ -327,9 +371,9 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
 
           {/* Segment Info */}
           <div className="text-[10px] text-slate-500 font-mono flex gap-4">
-            <span>Start: {segments[selectedSegment].startTime.toFixed(2)}s</span>
-            <span>End: {segments[selectedSegment].endTime.toFixed(2)}s</span>
-            <span>Duration: {segments[selectedSegment].duration.toFixed(2)}s</span>
+            <span>Start: {(segments[selectedSegment]?.startTime ?? 0).toFixed(2)}s</span>
+            <span>End: {(segments[selectedSegment]?.endTime ?? 0).toFixed(2)}s</span>
+            <span>Duration: {(segments[selectedSegment]?.duration ?? 0).toFixed(2)}s</span>
           </div>
         </div>
       )}

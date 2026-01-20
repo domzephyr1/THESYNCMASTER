@@ -17,6 +17,25 @@ const safePlay = (element: HTMLMediaElement | null): void => {
   });
 };
 
+/**
+ * Safely set currentTime on a media element.
+ * Guards against NaN, Infinity, and negative values that would throw errors.
+ */
+const safeSetCurrentTime = (element: HTMLMediaElement | null, time: number): boolean => {
+  if (!element) return false;
+  if (!isFinite(time) || time < 0) {
+    console.warn('Invalid currentTime value:', time);
+    return false;
+  }
+  try {
+    element.currentTime = time;
+    return true;
+  } catch (e) {
+    console.warn('Failed to set currentTime:', e);
+    return false;
+  }
+};
+
 // Binary search for finding segment at a given time - O(log n) instead of O(n)
 function findSegmentAtTime(segments: EnhancedSyncSegment[], time: number): EnhancedSyncSegment | null {
   if (segments.length === 0) return null;
@@ -155,7 +174,7 @@ const Player: React.FC<PlayerProps> = ({
         // Set the first video to the correct position
         const firstVideo = videoRefs.current[segments[0].videoIndex];
         if (firstVideo) {
-          firstVideo.currentTime = segments[0].clipStartTime;
+          safeSetCurrentTime(firstVideo, segments[0].clipStartTime);
         }
 
         setDisplayClipIndex(segments[0].videoIndex);
@@ -319,7 +338,7 @@ const Player: React.FC<PlayerProps> = ({
 
               // ALWAYS set position precisely at cut - this is critical for sync
               const targetStartTime = currentSegment.clipStartTime;
-              videoEl.currentTime = targetStartTime;
+              safeSetCurrentTime(videoEl, targetStartTime);
 
               // Set playback speed BEFORE playing
               videoEl.playbackRate = currentSegment.playbackSpeed || 1.0;
@@ -358,14 +377,14 @@ const Player: React.FC<PlayerProps> = ({
                  if (targetVideoTime >= clipData.trimEnd) {
                     const loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
                     if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > PLAYBACK.LOOP_SYNC_TOLERANCE) {
-                        activeVideo.currentTime = loopAdjustedTime;
+                        safeSetCurrentTime(activeVideo, loopAdjustedTime);
                     }
                  }
                  // REMOVED: Constant drift correction - this was causing stuttering
                  // Only correct if SEVERELY out of sync - indicates a real problem
                  else if (drift > PLAYBACK.MAX_DRIFT_TOLERANCE) {
                     console.log('⚡ Major drift correction:', drift.toFixed(3));
-                    activeVideo.currentTime = targetVideoTime;
+                    safeSetCurrentTime(activeVideo, targetVideoTime);
                  }
 
                  // Ensure video is playing
@@ -458,7 +477,7 @@ const Player: React.FC<PlayerProps> = ({
 
                      // Check if we need to seek
                      if (Math.abs(nextVideo.currentTime - targetTime) > 0.1) {
-                       nextVideo.currentTime = targetTime;
+                       safeSetCurrentTime(nextVideo, targetTime);
 
                        // Wait for buffer to be ready
                        const onSeeked = () => {
@@ -574,7 +593,7 @@ const Player: React.FC<PlayerProps> = ({
   // 4. Handle External Seek
   useEffect(() => {
     if (seekTime !== null && audioRef.current) {
-      audioRef.current.currentTime = seekTime;
+      safeSetCurrentTime(audioRef.current, seekTime);
       onTimeUpdateRef.current(seekTime);
 
       // Use binary search for segment lookup (use ref for latest segments)
@@ -603,10 +622,10 @@ const Player: React.FC<PlayerProps> = ({
              const timeInSegment = seekTime - targetSegment.startTime;
              let targetTime = targetSegment.clipStartTime + timeInSegment;
              const sourceDuration = clipData.trimEnd - clipData.trimStart;
-             if (targetTime > clipData.trimEnd) {
+             if (sourceDuration > 0 && targetTime > clipData.trimEnd) {
                  targetTime = clipData.trimStart + ((targetTime - clipData.trimStart) % sourceDuration);
              }
-             videoEl.currentTime = targetTime;
+             safeSetCurrentTime(videoEl, targetTime);
              videoEl.style.opacity = '1';
              videoEl.style.zIndex = '10';
          }
