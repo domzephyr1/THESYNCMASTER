@@ -182,40 +182,48 @@ const Player: React.FC<PlayerProps> = ({
 
       prevSegmentsRef.current = segments;
 
-      // Preload first 3 unique video clips used in segments for smooth start
-      const preloadVideos = async () => {
-        const uniqueIndices = [...new Set(segments.slice(0, 10).map(s => s.videoIndex))].slice(0, 3);
+      // Only preload on initial load or when segments change significantly
+      // Don't preload when just editing individual segment properties
+      if (!isReady || segmentsChanged) {
+        // Preload first 3 unique video clips used in segments for smooth start
+        const preloadVideos = async () => {
+          const uniqueIndices = [...new Set(segments.slice(0, 10).map(s => s.videoIndex))].slice(0, 3);
 
-        await Promise.all(
-          uniqueIndices.map(idx => {
-            return new Promise<void>((resolve) => {
-              const video = videoRefs.current[idx];
-              if (video) {
-                if (video.readyState >= 3) {
+          await Promise.all(
+            uniqueIndices.map(idx => {
+              return new Promise<void>((resolve) => {
+                const video = videoRefs.current[idx];
+                if (video) {
+                  // Already loaded - don't call load() again
+                  if (video.readyState >= 3) {
+                    resolve();
+                    return;
+                  }
+                  const onReady = () => {
+                    video.removeEventListener('canplaythrough', onReady);
+                    resolve();
+                  };
+                  video.addEventListener('canplaythrough', onReady);
+                  // Only load if not already loading/loaded
+                  if (video.readyState === 0) {
+                    video.load();
+                  }
+                  // Timeout fallback
+                  setTimeout(resolve, 2000);
+                } else {
                   resolve();
-                  return;
                 }
-                const onReady = () => {
-                  video.removeEventListener('canplaythrough', onReady);
-                  resolve();
-                };
-                video.addEventListener('canplaythrough', onReady);
-                video.load();
-                // Timeout fallback
-                setTimeout(resolve, 2000);
-              } else {
-                resolve();
-              }
-            });
-          })
-        );
+              });
+            })
+          );
 
-        setIsReady(true);
-      };
+          setIsReady(true);
+        };
 
-      preloadVideos();
+        preloadVideos();
+      }
     }
-  }, [segments, videoClips]);
+  }, [segments, videoClips, isReady]);
 
   // Cleanup video elements on unmount to prevent memory leaks
   useEffect(() => {
