@@ -299,19 +299,28 @@ export class SegmentationService {
     const lastSegment = existingSegments[existingSegments.length - 1];
     const lastUsedIndex = lastSegment?.videoIndex ?? -1;
 
-    // Get the last 2 used indices to prevent back-to-back and near-repeats
-    const recentIndices = existingSegments.slice(-2).map(s => s.videoIndex);
+    // Get the last 4 used indices to prevent repetition patterns
+    const recentIndices = existingSegments.slice(-4).map(s => s.videoIndex);
 
     const scored = clips.map((clip, index) => {
       // Hard block: never use same clip as previous (unless only 1 clip available)
       if (clips.length > 1 && index === lastUsedIndex) {
         return { index, score: -1000 };
       }
+
+      // Hard block: never use clip from 2 segments ago (prevents A-B-A pattern)
+      if (clips.length > 2 && recentIndices.length >= 2 && index === recentIndices[recentIndices.length - 2]) {
+        return { index, score: -1000 };
+      }
+
       let score = 100;
 
-      // Extra penalty for clip used 2 segments ago (avoid A-B-A pattern)
-      if (clips.length > 2 && recentIndices.length >= 2 && index === recentIndices[0]) {
-        score -= 75;
+      // Strong penalty for clip used 3-4 segments ago (prevents A-B-C-A patterns)
+      if (clips.length > 3 && recentIndices.length >= 3 && index === recentIndices[recentIndices.length - 3]) {
+        score -= 150;
+      }
+      if (clips.length > 4 && recentIndices.length >= 4 && index === recentIndices[recentIndices.length - 4]) {
+        score -= 100;
       }
 
       // Penalize recent use
@@ -358,11 +367,27 @@ export class SegmentationService {
 
     scored.sort((a, b) => b.score - a.score);
 
-    // Randomness among top candidates to use more clips
-    const topCandidates = scored.slice(0, Math.max(
+    // CRITICAL: Filter out blocked clips (score -1000) BEFORE selecting
+    const validCandidates = scored.filter(s => s.score > -500);
+
+    // Debug: Log blocked clips
+    const blockedClips = scored.filter(s => s.score <= -500);
+    if (blockedClips.length > 0) {
+      console.log(`🚫 Blocked clips: [${blockedClips.map(c => c.index + 1).join(', ')}] | Last used: ${lastUsedIndex + 1} | Recent: [${recentIndices.map(i => i + 1).join(', ')}]`);
+    }
+
+    // If somehow all clips are blocked (shouldn't happen), fall back to highest scored
+    if (validCandidates.length === 0) {
+      console.warn('⚠️ All clips blocked! Falling back to highest scored clip.');
+      return { index: scored[0].index };
+    }
+
+    // Randomness among top VALID candidates to use more clips
+    const topCount = Math.max(
       CLIP_SELECTION.MIN_TOP_CANDIDATES,
-      Math.ceil(clips.length * CLIP_SELECTION.TOP_CANDIDATES_PERCENTAGE)
-    ));
+      Math.ceil(validCandidates.length * CLIP_SELECTION.TOP_CANDIDATES_PERCENTAGE)
+    );
+    const topCandidates = validCandidates.slice(0, Math.min(topCount, validCandidates.length));
     const selected = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
     return { index: selected.index };
