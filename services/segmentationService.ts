@@ -38,6 +38,34 @@ export class SegmentationService {
     let currentBeatIndex = 0;
     let totalScore = 0;
 
+    // --- Handle Intro Gap (before first beat) ---
+    // If first beat doesn't start at 0, create an intro segment
+    const firstBeatTime = beats.length > 0 ? beats[0].time : 0;
+    if (firstBeatTime > 0.5) { // Only if there's a significant gap (>0.5s)
+      // Select a calm clip for the intro (prefer low motion)
+      const introClipIndex = this.selectIntroClip(videoClips);
+      const introClip = videoClips[introClipIndex];
+
+      const introSegment: EnhancedSyncSegment = {
+        startTime: 0,
+        endTime: firstBeatTime,
+        duration: firstBeatTime,
+        videoIndex: introClipIndex,
+        clipStartTime: introClip?.trimStart || 0,
+        transition: TransitionType.CUT,
+        prevVideoIndex: -1,
+        filter: 'none',
+        isHeroSegment: false,
+        isDropSegment: false,
+        playbackSpeed: 1.0,
+        syncScore: 50 // Neutral score for intro
+      };
+
+      segments.push(introSegment);
+      totalScore += 50;
+      console.log(`📍 Added intro segment: 0s - ${firstBeatTime.toFixed(2)}s (Clip ${introClipIndex + 1})`);
+    }
+
     while (currentBeatIndex < beats.length) {
       const beat = beats[currentBeatIndex];
       const nextBeat = beats[currentBeatIndex + 1];
@@ -228,6 +256,26 @@ export class SegmentationService {
     scored.sort((a, b) => b.score - a.score);
     const heroCount = Math.max(1, Math.floor(clips.length * 0.25));
     return scored.slice(0, heroCount).map(s => s.index);
+  }
+
+  // Select a calm clip for intro sections (prefer lower motion)
+  private selectIntroClip(clips: VideoClip[]): number {
+    if (clips.length === 0) return 0;
+    if (clips.length === 1) return 0;
+
+    // Score clips - prefer lower motion and moderate brightness for intros
+    const scored = clips.map((clip, index) => ({
+      index,
+      score: (1 - (clip.metadata?.motionEnergy || 0.5)) * 0.5 + // Prefer calm clips
+             (clip.metadata?.brightness || 0.5) * 0.3 + // Prefer visible clips
+             Math.random() * 0.2 // Small random factor for variety
+    }));
+
+    scored.sort((a, b) => b.score - a.score);
+
+    // Pick from top 3 candidates randomly
+    const topCandidates = scored.slice(0, Math.min(3, scored.length));
+    return topCandidates[Math.floor(Math.random() * topCandidates.length)].index;
   }
 
   private selectClipForSegment(
