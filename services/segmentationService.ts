@@ -146,7 +146,12 @@ export class SegmentationService {
 
       // --- Calculate Clip Start Time ---
       const clip = videoClips[clipSelection.index];
-      const clipStartTime = this.calculateClipStartTime(clip, beat, endTime - beat.time, isHero);
+      const segmentDuration = endTime - beat.time;
+      const clipStartTime = this.calculateClipStartTime(clip, beat, segmentDuration, isHero);
+
+      // --- Check if segment exceeds clip duration (prevent looping) ---
+      const clipAvailableDuration = (clip.trimEnd || clip.duration) - clipStartTime;
+      const needsSplit = segmentDuration > clipAvailableDuration && clipAvailableDuration > 0.5;
 
       // --- Speed Ramping ---
       let playbackSpeed = 1.0;
@@ -162,24 +167,78 @@ export class SegmentationService {
       const syncScore = this.calculateSegmentScore(beat, clip, inDrop, isHero);
       totalScore += syncScore;
 
-      // --- Build Segment ---
-      const segment: EnhancedSyncSegment = {
-        startTime: beat.time,
-        endTime,
-        duration: endTime - beat.time,
-        videoIndex: clipSelection.index,
-        clipStartTime,
-        transition,
-        prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
-        filter,
-        isHeroSegment: isHero,
-        isDropSegment: inDrop,
-        rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
-        playbackSpeed,
-        syncScore
-      };
+      if (needsSplit) {
+        // Split into multiple segments to avoid clip looping
+        let remainingDuration = segmentDuration;
+        let currentStartTime = beat.time;
+        let currentClipIndex = clipSelection.index;
+        let currentClipStart = clipStartTime;
+        let isFirstSplit = true;
 
-      segments.push(segment);
+        while (remainingDuration > 0.2) {
+          const currentClip = videoClips[currentClipIndex];
+          const availableDuration = (currentClip.trimEnd || currentClip.duration) - currentClipStart;
+          const thisSegmentDuration = Math.min(remainingDuration, availableDuration);
+
+          const splitSegment: EnhancedSyncSegment = {
+            startTime: currentStartTime,
+            endTime: currentStartTime + thisSegmentDuration,
+            duration: thisSegmentDuration,
+            videoIndex: currentClipIndex,
+            clipStartTime: currentClipStart,
+            transition: isFirstSplit ? transition : TransitionType.CUT,
+            prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
+            filter,
+            isHeroSegment: isHero && isFirstSplit,
+            isDropSegment: inDrop,
+            rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
+            playbackSpeed,
+            syncScore: isFirstSplit ? syncScore : 50
+          };
+
+          segments.push(splitSegment);
+          if (!isFirstSplit) totalScore += 50;
+
+          remainingDuration -= thisSegmentDuration;
+          currentStartTime += thisSegmentDuration;
+          isFirstSplit = false;
+
+          // Select a different clip for the next split (if needed)
+          if (remainingDuration > 0.2) {
+            const nextClipSelection = this.selectClipForSegment(
+              beat,
+              videoClips,
+              segments,
+              false,
+              heroClipIndices,
+              inDrop,
+              enableSmartReorder
+            );
+            currentClipIndex = nextClipSelection.index;
+            currentClipStart = videoClips[currentClipIndex]?.trimStart || 0;
+          }
+        }
+      } else {
+        // --- Build Single Segment (normal case) ---
+        const segment: EnhancedSyncSegment = {
+          startTime: beat.time,
+          endTime,
+          duration: endTime - beat.time,
+          videoIndex: clipSelection.index,
+          clipStartTime,
+          transition,
+          prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
+          filter,
+          isHeroSegment: isHero,
+          isDropSegment: inDrop,
+          rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
+          playbackSpeed,
+          syncScore
+        };
+
+        segments.push(segment);
+      }
+
       currentBeatIndex += segmentBeats;
     }
 

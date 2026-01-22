@@ -1,6 +1,27 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { EnhancedSyncSegment, VideoClip, TransitionType } from '../types';
-import { Film, Sparkles, ArrowRightLeft, GripVertical, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Film, Sparkles, ArrowRightLeft, GripVertical, ChevronLeft, ChevronRight, Palette } from 'lucide-react';
+
+// Filter types matching the segment filter property
+type FilterType = 'none' | 'bw' | 'contrast' | 'cyber' | 'saturate' | 'warm';
+
+const FILTER_ICONS: Record<FilterType, string> = {
+  'none': '🚫',
+  'bw': '⬛',
+  'contrast': '◐',
+  'cyber': '💠',
+  'saturate': '🌈',
+  'warm': '🔥',
+};
+
+const FILTER_LABELS: Record<FilterType, string> = {
+  'none': 'No Filter',
+  'bw': 'Black & White',
+  'contrast': 'High Contrast',
+  'cyber': 'Cyber/Glitch',
+  'saturate': 'Saturated',
+  'warm': 'Warm Tones',
+};
 
 interface SegmentTrackProps {
   segments: EnhancedSyncSegment[];
@@ -61,6 +82,7 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
   const [selectedSegment, setSelectedSegment] = useState<number | null>(null);
   const [showClipPicker, setShowClipPicker] = useState(false);
   const [showTransitionPicker, setShowTransitionPicker] = useState(false);
+  const [showFilterPicker, setShowFilterPicker] = useState(false);
   const [resizing, setResizing] = useState<{ index: number; edge: 'start' | 'end' } | null>(null);
   const [hoveredSegment, setHoveredSegment] = useState<number | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -79,6 +101,7 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
       setSelectedSegment(null);
       setShowClipPicker(false);
       setShowTransitionPicker(false);
+      setShowFilterPicker(false);
     } else {
       setSelectedSegment(index);
       setShowClipPicker(false);
@@ -110,6 +133,14 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
     if (selectedSegment !== null) {
       onSegmentUpdate(selectedSegment, { transition });
       setShowTransitionPicker(false);
+    }
+  };
+
+  // Handle filter change
+  const handleFilterChange = (filter: FilterType) => {
+    if (selectedSegment !== null) {
+      onSegmentUpdate(selectedSegment, { filter });
+      setShowFilterPicker(false);
     }
   };
 
@@ -375,12 +406,12 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-2">
             {/* Change Clip */}
             <div>
               <button
-                onClick={() => { setShowClipPicker(!showClipPicker); setShowTransitionPicker(false); }}
-                className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded text-sm font-medium transition-colors
+                onClick={() => { setShowClipPicker(!showClipPicker); setShowTransitionPicker(false); setShowFilterPicker(false); }}
+                className={`w-full flex items-center justify-center gap-1 px-2 py-2.5 rounded text-sm font-medium transition-colors
                   ${showClipPicker ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'}`}
               >
                 <Film className="w-4 h-4" />
@@ -388,7 +419,7 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
               </button>
 
               {showClipPicker && (
-                <div className="mt-2 max-h-40 overflow-y-auto bg-slate-900 rounded border border-slate-600 p-1 shadow-xl">
+                <div className="mt-2 max-h-40 overflow-y-auto bg-slate-900 rounded border border-slate-600 p-1 shadow-xl absolute z-50 left-0 right-0 mx-4">
                   {videoClips.map((clip, idx) => (
                     <button
                       key={clip.id}
@@ -410,16 +441,16 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
             {/* Change Transition */}
             <div>
               <button
-                onClick={() => { setShowTransitionPicker(!showTransitionPicker); setShowClipPicker(false); }}
-                className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded text-sm font-medium transition-colors
+                onClick={() => { setShowTransitionPicker(!showTransitionPicker); setShowClipPicker(false); setShowFilterPicker(false); }}
+                className={`w-full flex items-center justify-center gap-1 px-2 py-2.5 rounded text-sm font-medium transition-colors
                   ${showTransitionPicker ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'}`}
               >
                 <ArrowRightLeft className="w-4 h-4" />
-                Transition
+                Trans
               </button>
 
               {showTransitionPicker && (
-                <div className="mt-2 bg-slate-900 rounded border border-slate-600 p-1 shadow-xl">
+                <div className="mt-2 bg-slate-900 rounded border border-slate-600 p-1 shadow-xl absolute z-50">
                   {Object.values(TransitionType).map((t) => (
                     <button
                       key={t}
@@ -437,34 +468,65 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
               )}
             </div>
 
+            {/* Change Filter */}
+            <div>
+              <button
+                onClick={() => { setShowFilterPicker(!showFilterPicker); setShowClipPicker(false); setShowTransitionPicker(false); }}
+                className={`w-full flex items-center justify-center gap-1 px-2 py-2.5 rounded text-sm font-medium transition-colors
+                  ${showFilterPicker ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'}`}
+              >
+                <Palette className="w-4 h-4" />
+                Filter
+              </button>
+
+              {showFilterPicker && (
+                <div className="mt-2 bg-slate-900 rounded border border-slate-600 p-1 shadow-xl absolute z-50">
+                  {(Object.keys(FILTER_LABELS) as FilterType[]).map((f) => (
+                    <button
+                      key={f}
+                      onClick={() => handleFilterChange(f)}
+                      className={`w-full text-left px-2 py-1.5 text-xs rounded transition-colors flex items-center gap-2
+                        ${f === segments[selectedSegment]?.filter
+                          ? 'bg-amber-600 text-white'
+                          : 'text-slate-300 hover:bg-slate-700'}`}
+                    >
+                      <span className="text-sm">{FILTER_ICONS[f]}</span>
+                      {FILTER_LABELS[f]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Quick Duration Adjust */}
             <div>
               <div className="flex gap-1">
                 <button
                   onClick={() => adjustDuration(-0.1)}
-                  className="flex-1 flex items-center justify-center px-2 py-2.5 rounded text-sm font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
+                  className="flex-1 flex items-center justify-center px-1 py-2.5 rounded text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
                   title="Shorten by 0.1s"
                 >
-                  <ChevronLeft className="w-4 h-4" />
-                  -0.1s
+                  <ChevronLeft className="w-3 h-3" />
+                  0.1
                 </button>
                 <button
                   onClick={() => adjustDuration(0.1)}
-                  className="flex-1 flex items-center justify-center px-2 py-2.5 rounded text-sm font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
+                  className="flex-1 flex items-center justify-center px-1 py-2.5 rounded text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
                   title="Lengthen by 0.1s"
                 >
-                  +0.1s
-                  <ChevronRight className="w-4 h-4" />
+                  0.1
+                  <ChevronRight className="w-3 h-3" />
                 </button>
               </div>
             </div>
           </div>
 
           {/* Segment Info */}
-          <div className="text-xs text-slate-500 font-mono flex gap-6 pt-2 border-t border-slate-700">
+          <div className="text-xs text-slate-500 font-mono flex flex-wrap gap-4 pt-2 border-t border-slate-700">
             <span>Start: <span className="text-slate-300">{(segments[selectedSegment]?.startTime ?? 0).toFixed(2)}s</span></span>
             <span>End: <span className="text-slate-300">{(segments[selectedSegment]?.endTime ?? 0).toFixed(2)}s</span></span>
             <span>Duration: <span className="text-cyan-400">{(segments[selectedSegment]?.duration ?? 0).toFixed(2)}s</span></span>
+            <span>Filter: <span className="text-amber-400">{FILTER_LABELS[(segments[selectedSegment]?.filter as FilterType) || 'none']}</span></span>
           </div>
         </div>
       )}
