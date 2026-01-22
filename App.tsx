@@ -39,6 +39,16 @@ async function processBatched<T, R>(
   return results;
 }
 
+// Wrap a promise with a timeout to prevent hanging
+function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), ms)
+    )
+  ]);
+}
+
 function App() {
   const [step, setStep] = useState<AppStep>(AppStep.UPLOAD);
   
@@ -316,12 +326,21 @@ function App() {
     setStep(AppStep.ANALYZING);
     setIsAnalyzing(true);
 
+    // Master timeout - 90 seconds for entire analysis
+    const MASTER_TIMEOUT = 90000;
+    const analysisStartTime = Date.now();
+
     try {
       const totalClips = videoFiles.length;
 
       // ========== STEP 1: Decode Audio ==========
       console.log("📊 Step 1/6: Decoding audio...");
-      const buffer = await audioService.decodeAudio(audioFile);
+      const buffer = await withTimeout(
+        audioService.decodeAudio(audioFile),
+        30000,
+        'Audio decoding timed out after 30 seconds'
+      );
+      console.log(`  ✓ Audio decoded in ${Date.now() - analysisStartTime}ms`);
       setAudioBuffer(buffer);
       setDuration(buffer.duration);
 
@@ -374,7 +393,12 @@ function App() {
 
           try {
             console.log(`  → Analyzing clip ${index + 1}/${totalClips}: ${clip.name}...`);
-            const metadata = await videoAnalysisService.analyzeClip(clip.url);
+            // 10-second timeout per clip analysis
+            const metadata = await withTimeout(
+              videoAnalysisService.analyzeClip(clip.url),
+              10000,
+              `Clip ${index + 1} analysis timed out`
+            );
             console.log(`  ✓ Clip ${index + 1}/${totalClips}: brightness=${metadata.brightness?.toFixed(2)}, motion=${metadata.motionEnergy?.toFixed(2)}`);
             return { ...clip, metadata };
           } catch (e) {
@@ -389,7 +413,12 @@ function App() {
 
       // ========== STEP 4: Detect Beats ==========
       console.log("📊 Step 4/6: Analyzing audio beats and rhythm...");
-      const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(buffer, minEnergy, peakSensitivity);
+      const { beats: detectedBeats, phraseData: detectedPhraseData } = await withTimeout(
+        audioService.detectBeatsEnhanced(buffer, minEnergy, peakSensitivity),
+        30000,
+        'Beat detection timed out after 30 seconds'
+      );
+      console.log(`  ✓ Beat detection complete: ${detectedBeats.length} beats in ${Date.now() - analysisStartTime}ms`);
       setBeats(detectedBeats);
       setPhraseData(detectedPhraseData);
 
@@ -414,7 +443,8 @@ function App() {
 
       // ========== STEP 6: Pre-buffer ALL Videos ==========
       console.log(`📊 Step 6/6: Pre-buffering ${totalClips} videos for smooth playback...`);
-      await Promise.all(
+      // Wrap entire prebuffering in a 30-second timeout
+      await withTimeout(Promise.all(
         videosWithMetadata.map((clip, index) => {
           return new Promise<void>((resolve) => {
             const video = document.createElement('video');
@@ -472,15 +502,19 @@ function App() {
             video.load();
           });
         })
-      );
+      ), 30000, 'Video pre-buffering timed out after 30 seconds');
+      console.log(`  ✓ Pre-buffering complete in ${Date.now() - analysisStartTime}ms`);
 
+      const totalTime = Date.now() - analysisStartTime;
       console.log("🎬 Analysis complete! Ready to preview.");
-      console.log(`   ${detectedBeats.length} beats | ${generatedSegments.length} segments | ${totalClips} clips analyzed`);
+      console.log(`   ${detectedBeats.length} beats | ${generatedSegments.length} segments | ${totalClips} clips analyzed | Total time: ${(totalTime / 1000).toFixed(1)}s`);
 
       setIsAnalyzing(false);
       setStep(AppStep.PREVIEW);
     } catch (err) {
-      console.error("Analysis failed", err);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const elapsedTime = Date.now() - analysisStartTime;
+      console.error(`❌ Analysis failed after ${(elapsedTime / 1000).toFixed(1)}s:`, errorMessage);
 
       // Clean up any created URLs to prevent memory leaks on error
       urlsToRevoke.current.forEach(url => URL.revokeObjectURL(url));
@@ -500,8 +534,11 @@ function App() {
       setStep(AppStep.UPLOAD);
 
       // Show more helpful error message
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      alert(`Analysis failed: ${errorMessage}\n\nPlease try a different audio file or check that your video files are valid.`);
+      if (errorMessage.includes('timed out')) {
+        alert(`Analysis timed out!\n\nThis can happen with very large files. Try:\n• Fewer/shorter video clips\n• Shorter audio file\n• Refreshing the page`);
+      } else {
+        alert(`Analysis failed: ${errorMessage}\n\nPlease try a different audio file or check that your video files are valid.`);
+      }
     }
   };
 
