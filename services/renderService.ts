@@ -37,15 +37,45 @@ export class RenderService {
     videoClips: VideoClip[],
     onProgress: (progress: number) => void
   ): Promise<Blob> {
-    if (!this.ffmpeg || !this.loaded) await this.load();
+    console.log("🎬 Starting FFmpeg Render...");
+    console.log(`   Audio: ${audioFile.name} (${(audioFile.size / 1024 / 1024).toFixed(2)} MB)`);
+    console.log(`   Segments: ${segments.length}`);
+    console.log(`   Clips: ${videoClips.length}`);
+
+    // Validate inputs
+    if (!segments || segments.length === 0) {
+      throw new Error('No segments to render. Please generate sync first.');
+    }
+    if (!videoClips || videoClips.length === 0) {
+      throw new Error('No video clips available.');
+    }
+    if (!audioFile) {
+      throw new Error('No audio file available.');
+    }
+
+    // Check if clips have file data
+    const clipsWithFiles = videoClips.filter(c => c.file);
+    console.log(`   Clips with file data: ${clipsWithFiles.length}/${videoClips.length}`);
+
+    if (clipsWithFiles.length === 0) {
+      throw new Error('Video clips are missing file data. Please re-upload videos.');
+    }
+
+    try {
+      if (!this.ffmpeg || !this.loaded) {
+        console.log("📦 Loading FFmpeg...");
+        await this.load();
+      }
+    } catch (loadError) {
+      console.error("FFmpeg load failed:", loadError);
+      throw new Error(`FFmpeg failed to load: ${loadError instanceof Error ? loadError.message : 'Unknown error'}`);
+    }
+
     const ffmpeg = this.ffmpeg!;
 
     ffmpeg.on('progress', ({ progress }) => {
         onProgress(Math.max(0, Math.min(1, progress)));
     });
-
-    console.log("🎬 Starting FFmpeg Render...");
-    console.log(`   Processing ${segments.length} segments from ${videoClips.length} clips`);
 
     // Process ALL segments - no limit
     const workingSegments = segments;
@@ -58,16 +88,33 @@ export class RenderService {
 
       // 2. Write only the video clips we need
       const usedIndices = [...new Set(workingSegments.map(s => s.videoIndex))];
+      console.log(`📹 Loading ${usedIndices.length} unique clips: [${usedIndices.join(', ')}]`);
 
       for (const i of usedIndices) {
         const clip = videoClips[i];
-        if (!clip || !clip.file) {
-          console.warn(`Clip ${i} missing, skipping`);
-          continue;
+        if (!clip) {
+          console.error(`❌ Clip ${i} not found in videoClips array (length: ${videoClips.length})`);
+          throw new Error(`Clip ${i} not found. Please re-upload videos.`);
         }
-        const videoData = await fetchFile(clip.file);
-        await ffmpeg.writeFile(`v${i}.mp4`, videoData);
-        console.log(`✓ Loaded clip ${i}: ${clip.name}`);
+
+        try {
+          let videoData: Uint8Array;
+          if (clip.file) {
+            console.log(`  → Loading clip ${i} from file: ${clip.name} (${(clip.file.size / 1024 / 1024).toFixed(2)} MB)`);
+            videoData = await fetchFile(clip.file);
+          } else if (clip.url) {
+            console.log(`  → Loading clip ${i} from URL: ${clip.name}`);
+            videoData = await fetchFile(clip.url);
+          } else {
+            throw new Error(`Clip ${i} has no file or URL`);
+          }
+
+          await ffmpeg.writeFile(`v${i}.mp4`, videoData);
+          console.log(`  ✓ Loaded clip ${i}: ${clip.name}`);
+        } catch (clipError) {
+          console.error(`❌ Failed to load clip ${i}:`, clipError);
+          throw new Error(`Failed to load clip "${clip.name}": ${clipError instanceof Error ? clipError.message : 'Unknown error'}`);
+        }
       }
 
       // 3. Process in batches to manage memory for long songs
@@ -91,6 +138,12 @@ export class RenderService {
           const clipIdx = seg.videoIndex;
           const segFile = `seg${globalIdx}.mp4`;
 
+          // Validate segment data
+          if (!isFinite(seg.clipStartTime) || !isFinite(seg.duration) || seg.duration <= 0) {
+            console.warn(`⚠️ Skipping invalid segment ${globalIdx}: start=${seg.clipStartTime}, duration=${seg.duration}`);
+            continue;
+          }
+
           const extractCmd = [
             '-ss', seg.clipStartTime.toFixed(3),
             '-i', `v${clipIdx}.mp4`,
@@ -104,14 +157,24 @@ export class RenderService {
             segFile
           ];
 
-          await ffmpeg.exec(extractCmd);
-          segmentFiles.push(segFile);
+          try {
+            await ffmpeg.exec(extractCmd);
+            segmentFiles.push(segFile);
+          } catch (segError) {
+            console.error(`❌ Failed to extract segment ${globalIdx} from clip ${clipIdx}:`, segError);
+            // Continue with other segments rather than failing completely
+          }
 
           const overallProgress = (globalIdx + 1) / workingSegments.length * 0.7;
           onProgress(overallProgress);
         }
 
         // Concat this batch into an intermediate file
+        if (segmentFiles.length === 0) {
+          console.warn(`⚠️ Batch ${batch + 1} has no valid segments, skipping`);
+          continue;
+        }
+
         const batchFile = `batch${batch}.mp4`;
         const batchList = segmentFiles.map(f => `file '${f}'`).join('\n');
         await ffmpeg.writeFile(`list${batch}.txt`, batchList);
@@ -137,7 +200,11 @@ export class RenderService {
       }
 
       // 4. Final concat of all batches with audio
-      console.log("🔗 Final merge with audio...");
+      if (intermediateFiles.length === 0) {
+        throw new Error('No video segments were successfully processed. Check that your video files are valid MP4s.');
+      }
+
+      console.log(`🔗 Final merge: ${intermediateFiles.length} batch files with audio...`);
       onProgress(0.75);
 
       // If multiple batches, concat them first
