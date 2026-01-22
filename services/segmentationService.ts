@@ -39,31 +39,43 @@ export class SegmentationService {
     let totalScore = 0;
 
     // --- Handle Intro Gap (before first beat) ---
-    // If first beat doesn't start at 0, create an intro segment
+    // If first beat doesn't start at 0, create intro segments with non-repeating clips
     const firstBeatTime = beats.length > 0 ? beats[0].time : 0;
     if (firstBeatTime > 0.5) { // Only if there's a significant gap (>0.5s)
-      // Select a calm clip for the intro (prefer low motion)
-      const introClipIndex = this.selectIntroClip(videoClips);
-      const introClip = videoClips[introClipIndex];
+      const INTRO_SEGMENT_DURATION = 5; // Target ~5 seconds per intro segment
+      const introSegmentCount = Math.ceil(firstBeatTime / INTRO_SEGMENT_DURATION);
+      const actualSegmentDuration = firstBeatTime / introSegmentCount;
 
-      const introSegment: EnhancedSyncSegment = {
-        startTime: 0,
-        endTime: firstBeatTime,
-        duration: firstBeatTime,
-        videoIndex: introClipIndex,
-        clipStartTime: introClip?.trimStart || 0,
-        transition: TransitionType.CUT,
-        prevVideoIndex: -1,
-        filter: 'none',
-        isHeroSegment: false,
-        isDropSegment: false,
-        playbackSpeed: 1.0,
-        syncScore: 50 // Neutral score for intro
-      };
+      // Get multiple calm clips for intro (non-repeating)
+      const introClipIndices = this.selectMultipleIntroClips(videoClips, introSegmentCount);
 
-      segments.push(introSegment);
-      totalScore += 50;
-      console.log(`📍 Added intro segment: 0s - ${firstBeatTime.toFixed(2)}s (Clip ${introClipIndex + 1})`);
+      let introStartTime = 0;
+      for (let i = 0; i < introSegmentCount; i++) {
+        const introEndTime = i === introSegmentCount - 1 ? firstBeatTime : introStartTime + actualSegmentDuration;
+        const clipIndex = introClipIndices[i];
+        const clip = videoClips[clipIndex];
+
+        const introSegment: EnhancedSyncSegment = {
+          startTime: introStartTime,
+          endTime: introEndTime,
+          duration: introEndTime - introStartTime,
+          videoIndex: clipIndex,
+          clipStartTime: clip?.trimStart || 0,
+          transition: i === 0 ? TransitionType.CUT : TransitionType.CROSSFADE,
+          prevVideoIndex: i > 0 ? introClipIndices[i - 1] : -1,
+          filter: 'none',
+          isHeroSegment: false,
+          isDropSegment: false,
+          playbackSpeed: 1.0,
+          syncScore: 50
+        };
+
+        segments.push(introSegment);
+        totalScore += 50;
+        introStartTime = introEndTime;
+      }
+
+      console.log(`📍 Added ${introSegmentCount} intro segments: 0s - ${firstBeatTime.toFixed(2)}s (Clips: ${introClipIndices.map(i => i + 1).join(', ')})`);
     }
 
     while (currentBeatIndex < beats.length) {
@@ -276,6 +288,55 @@ export class SegmentationService {
     // Pick from top 3 candidates randomly
     const topCandidates = scored.slice(0, Math.min(3, scored.length));
     return topCandidates[Math.floor(Math.random() * topCandidates.length)].index;
+  }
+
+  // Select multiple non-repeating calm clips for intro sections
+  private selectMultipleIntroClips(clips: VideoClip[], count: number): number[] {
+    if (clips.length === 0) return [0];
+    if (clips.length === 1) return Array(count).fill(0);
+
+    // Score clips - prefer lower motion and moderate brightness for intros
+    const scored = clips.map((clip, index) => ({
+      index,
+      score: (1 - (clip.metadata?.motionEnergy || 0.5)) * 0.6 + // Prefer calm clips
+             (clip.metadata?.brightness || 0.5) * 0.3 + // Prefer visible clips
+             Math.random() * 0.1 // Small random factor for variety
+    }));
+
+    scored.sort((a, b) => b.score - a.score);
+
+    // Get top candidates (at least as many as we need, or all clips if fewer)
+    const candidateCount = Math.min(Math.max(count * 2, 6), clips.length);
+    const topCandidates = scored.slice(0, candidateCount);
+
+    // Select non-repeating clips
+    const selectedIndices: number[] = [];
+    const usedIndices = new Set<number>();
+
+    for (let i = 0; i < count; i++) {
+      // Find available candidates not yet used
+      const available = topCandidates.filter(c => !usedIndices.has(c.index));
+
+      if (available.length > 0) {
+        // Pick randomly from available
+        const pick = available[Math.floor(Math.random() * available.length)];
+        selectedIndices.push(pick.index);
+        usedIndices.add(pick.index);
+      } else {
+        // If we've used all candidates, start reusing but avoid back-to-back
+        const lastUsed = selectedIndices[selectedIndices.length - 1];
+        const nonBackToBack = topCandidates.filter(c => c.index !== lastUsed);
+        if (nonBackToBack.length > 0) {
+          const pick = nonBackToBack[Math.floor(Math.random() * nonBackToBack.length)];
+          selectedIndices.push(pick.index);
+        } else {
+          // Fallback: just pick any
+          selectedIndices.push(topCandidates[0].index);
+        }
+      }
+    }
+
+    return selectedIndices;
   }
 
   private selectClipForSegment(

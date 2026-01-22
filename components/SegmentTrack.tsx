@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { EnhancedSyncSegment, VideoClip, TransitionType } from '../types';
-import { Film, Zap, Sparkles, ArrowRightLeft } from 'lucide-react';
+import { Film, Sparkles, ArrowRightLeft, GripVertical, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface SegmentTrackProps {
   segments: EnhancedSyncSegment[];
@@ -41,6 +41,15 @@ const getClipColor = (index: number): string => {
   return colors[index % colors.length];
 };
 
+const getClipBorderColor = (index: number): string => {
+  const colors = [
+    'border-cyan-400', 'border-purple-400', 'border-pink-400', 'border-orange-400',
+    'border-green-400', 'border-blue-400', 'border-red-400', 'border-yellow-400',
+    'border-teal-400', 'border-indigo-400', 'border-rose-400', 'border-amber-400',
+  ];
+  return colors[index % colors.length];
+};
+
 const SegmentTrack: React.FC<SegmentTrackProps> = ({
   segments,
   videoClips,
@@ -53,6 +62,7 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
   const [showClipPicker, setShowClipPicker] = useState(false);
   const [showTransitionPicker, setShowTransitionPicker] = useState(false);
   const [resizing, setResizing] = useState<{ index: number; edge: 'start' | 'end' } | null>(null);
+  const [hoveredSegment, setHoveredSegment] = useState<number | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
 
   // Calculate position percentage (guard against division by zero)
@@ -103,11 +113,39 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
     }
   };
 
+  // Quick duration adjustments
+  const adjustDuration = (amount: number) => {
+    if (selectedSegment === null) return;
+    const segment = segments[selectedSegment];
+    if (!segment) return;
+
+    const newEndTime = Math.max(segment.startTime + 0.1, segment.endTime + amount);
+    const nextSegment = segments[selectedSegment + 1];
+
+    // Don't go past the next segment or duration
+    const maxEndTime = nextSegment ? nextSegment.endTime - 0.1 : duration;
+    const clampedEndTime = Math.min(newEndTime, maxEndTime);
+
+    onSegmentUpdate(selectedSegment, {
+      endTime: clampedEndTime,
+      duration: clampedEndTime - segment.startTime
+    });
+
+    // Adjust next segment if exists
+    if (nextSegment) {
+      onSegmentUpdate(selectedSegment + 1, {
+        startTime: clampedEndTime,
+        duration: nextSegment.endTime - clampedEndTime
+      });
+    }
+  };
+
   // Handle resize start
   const handleResizeStart = (index: number, edge: 'start' | 'end', e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     setResizing({ index, edge });
+    setSelectedSegment(index);
   };
 
   // Handle resize move
@@ -126,18 +164,15 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
     const prevSegment = segments[resizing.index - 1];
     const nextSegment = segments[resizing.index + 1];
 
-    const minDuration = 0.2; // Minimum segment duration
+    const minDuration = 0.15; // Minimum segment duration
 
     if (resizing.edge === 'start') {
-      // Can't go before previous segment or make current segment too short
       const minTime = prevSegment ? prevSegment.startTime + minDuration : 0;
       const maxTime = segment.endTime - minDuration;
       const clampedTime = Math.max(minTime, Math.min(newTime, maxTime));
 
-      // Guard against non-finite values
       if (!isFinite(clampedTime)) return;
 
-      // Update current segment start and previous segment end
       onSegmentUpdate(resizing.index, {
         startTime: clampedTime,
         duration: segment.endTime - clampedTime
@@ -149,15 +184,12 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
         });
       }
     } else {
-      // Can't go past next segment or make current segment too short
       const minTime = segment.startTime + minDuration;
       const maxTime = nextSegment ? nextSegment.endTime - minDuration : duration;
       const clampedTime = Math.max(minTime, Math.min(newTime, maxTime));
 
-      // Guard against non-finite values
       if (!isFinite(clampedTime)) return;
 
-      // Update current segment end and next segment start
       onSegmentUpdate(resizing.index, {
         endTime: clampedTime,
         duration: clampedTime - segment.startTime
@@ -179,9 +211,13 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
   // Add/remove mouse event listeners for resizing
   React.useEffect(() => {
     if (resizing) {
+      document.body.style.cursor = 'ew-resize';
+      document.body.style.userSelect = 'none';
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
       return () => {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
         window.removeEventListener('mousemove', handleMouseMove);
         window.removeEventListener('mouseup', handleMouseUp);
       };
@@ -197,11 +233,11 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
         <div className="flex items-center justify-between text-xs text-slate-400">
           <span className="flex items-center gap-1">
             <Film className="w-3 h-3" />
-            Segment Track
+            Segment Editor
           </span>
           <span>No segments</span>
         </div>
-        <div className="h-16 bg-slate-900 rounded-lg border border-slate-700 flex items-center justify-center text-slate-600 text-sm">
+        <div className="h-20 bg-slate-900 rounded-lg border border-slate-700 flex items-center justify-center text-slate-600 text-sm">
           Generate sync to see segments
         </div>
       </div>
@@ -209,24 +245,25 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="flex items-center justify-between text-xs text-slate-400">
         <span className="flex items-center gap-1">
           <Film className="w-3 h-3" />
-          Segment Track
+          Segment Editor
         </span>
-        <span>{segments.length} segments</span>
+        <span className="text-slate-500">{segments.length} segments | Click to edit, drag edges to resize</span>
       </div>
 
-      {/* Main Track */}
+      {/* Main Track - Taller for easier interaction */}
       <div
         ref={trackRef}
-        className="relative h-16 bg-slate-900 rounded-lg border border-slate-700 overflow-hidden cursor-pointer"
+        className={`relative h-20 bg-slate-900 rounded-lg border overflow-hidden cursor-pointer transition-colors ${
+          resizing ? 'border-cyan-500 bg-slate-800' : 'border-slate-700'
+        }`}
         onClick={handleTrackClick}
       >
         {/* Segments */}
         {segments.map((segment, index) => {
-          // Skip segments with invalid data
           if (!segment || !isFinite(segment.startTime) || !isFinite(segment.endTime)) {
             return null;
           }
@@ -234,52 +271,78 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
           const left = getPositionPercent(segment.startTime);
           const width = getPositionPercent(segment.endTime) - left;
 
-          // Skip if width is invalid
           if (!isFinite(left) || !isFinite(width) || width <= 0) {
             return null;
           }
 
           const isSelected = selectedSegment === index;
+          const isHovered = hoveredSegment === index;
+          const isResizingThis = resizing?.index === index;
           const clipColor = getClipColor(segment.videoIndex ?? 0);
+          const borderColor = getClipBorderColor(segment.videoIndex ?? 0);
 
           return (
             <div
               key={index}
-              className={`absolute top-1 bottom-1 flex items-center justify-center text-[9px] font-mono text-white overflow-hidden transition-all cursor-pointer group
-                ${clipColor} ${isSelected ? 'ring-2 ring-white ring-offset-1 ring-offset-slate-900 z-20' : 'hover:brightness-110'}
+              className={`absolute top-1 bottom-1 flex items-center justify-center text-[10px] font-mono text-white overflow-hidden transition-all rounded-sm
+                ${clipColor}
+                ${isSelected ? `ring-2 ring-white ring-offset-1 ring-offset-slate-900 z-20 brightness-110` : ''}
+                ${isHovered && !isSelected ? 'brightness-125 z-10' : ''}
+                ${isResizingThis ? 'opacity-80' : ''}
                 ${segment.isDropSegment ? 'animate-pulse' : ''}
               `}
-              style={{ left: `${left}%`, width: `${width}%`, minWidth: '4px' }}
+              style={{ left: `${left}%`, width: `${width}%`, minWidth: '8px' }}
               onClick={(e) => handleSegmentClick(index, e)}
+              onMouseEnter={() => setHoveredSegment(index)}
+              onMouseLeave={() => setHoveredSegment(null)}
               title={`Clip ${(segment.videoIndex ?? 0) + 1} | ${TRANSITION_LABELS[segment.transition] || 'Cut'} | ${(segment.duration ?? 0).toFixed(2)}s`}
             >
-              {/* Resize handles */}
+              {/* Left resize handle - larger and more visible */}
               <div
-                className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/30 z-10"
+                className={`absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center transition-all
+                  ${isHovered || isSelected ? 'bg-white/30' : 'bg-white/0 hover:bg-white/20'}`}
                 onMouseDown={(e) => handleResizeStart(index, 'start', e)}
-              />
+              >
+                {(isHovered || isSelected) && width > 5 && (
+                  <GripVertical className="w-2 h-4 text-white/70" />
+                )}
+              </div>
+
+              {/* Right resize handle - larger and more visible */}
               <div
-                className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/30 z-10"
+                className={`absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center transition-all
+                  ${isHovered || isSelected ? 'bg-white/30' : 'bg-white/0 hover:bg-white/20'}`}
                 onMouseDown={(e) => handleResizeStart(index, 'end', e)}
-              />
+              >
+                {(isHovered || isSelected) && width > 5 && (
+                  <GripVertical className="w-2 h-4 text-white/70" />
+                )}
+              </div>
 
               {/* Segment content */}
-              {width > 3 && (
-                <span className="truncate px-1 pointer-events-none">
-                  {segment.videoIndex + 1}
-                </span>
-              )}
+              <div className="flex flex-col items-center pointer-events-none px-4">
+                {width > 4 && (
+                  <span className="font-bold text-white/90">
+                    {segment.videoIndex + 1}
+                  </span>
+                )}
+                {width > 8 && (
+                  <span className="text-[8px] text-white/60">
+                    {(segment.duration ?? 0).toFixed(1)}s
+                  </span>
+                )}
+              </div>
 
               {/* Transition indicator */}
               {index > 0 && segment.transition !== TransitionType.CUT && (
-                <div className="absolute -left-1 top-1/2 -translate-y-1/2 text-[8px] z-30">
+                <div className="absolute -left-1.5 top-1/2 -translate-y-1/2 text-sm z-30 drop-shadow-lg">
                   {TRANSITION_ICONS[segment.transition]}
                 </div>
               )}
 
-              {/* Hero/Drop indicators */}
+              {/* Hero indicator */}
               {segment.isHeroSegment && (
-                <Sparkles className="absolute top-0.5 right-0.5 w-2 h-2 text-yellow-300" />
+                <Sparkles className="absolute top-1 right-1 w-3 h-3 text-yellow-300" />
               )}
             </div>
           );
@@ -287,101 +350,124 @@ const SegmentTrack: React.FC<SegmentTrackProps> = ({
 
         {/* Playhead */}
         <div
-          className="absolute top-0 bottom-0 w-0.5 bg-white z-30 pointer-events-none shadow-[0_0_8px_rgba(255,255,255,0.8)]"
+          className="absolute top-0 bottom-0 w-0.5 bg-white z-30 pointer-events-none shadow-[0_0_10px_rgba(255,255,255,0.9)]"
           style={{ left: `${playheadPos}%` }}
-        />
+        >
+          <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-white rounded-full" />
+        </div>
       </div>
 
-      {/* Edit Panel */}
+      {/* Edit Panel - More prominent */}
       {selectedSegment !== null && segments[selectedSegment] && (
-        <div className="bg-slate-800 rounded-lg p-3 border border-slate-700 space-y-3 animate-fade-in">
+        <div className="bg-slate-800/90 backdrop-blur rounded-lg p-4 border border-cyan-500/50 space-y-4 animate-fade-in shadow-lg">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-slate-200">
-              Edit Segment {selectedSegment + 1}
+            <span className="text-sm font-bold text-white">
+              Editing Segment {selectedSegment + 1}
+              <span className="ml-2 text-slate-400 font-normal">
+                ({(segments[selectedSegment]?.duration ?? 0).toFixed(2)}s)
+              </span>
             </span>
             <button
               onClick={() => setSelectedSegment(null)}
-              className="text-slate-400 hover:text-white text-xs"
+              className="text-slate-400 hover:text-white text-sm px-2 py-1 rounded hover:bg-slate-700"
             >
               ✕ Close
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            {/* Change Clip Button */}
+          <div className="grid grid-cols-3 gap-3">
+            {/* Change Clip */}
             <div>
               <button
                 onClick={() => { setShowClipPicker(!showClipPicker); setShowTransitionPicker(false); }}
-                className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded text-sm transition-colors
-                  ${showClipPicker ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded text-sm font-medium transition-colors
+                  ${showClipPicker ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'}`}
               >
                 <Film className="w-4 h-4" />
-                Change Clip
+                Clip
               </button>
 
               {showClipPicker && (
-                <div className="mt-2 max-h-32 overflow-y-auto bg-slate-900 rounded border border-slate-600 p-1">
+                <div className="mt-2 max-h-40 overflow-y-auto bg-slate-900 rounded border border-slate-600 p-1 shadow-xl">
                   {videoClips.map((clip, idx) => (
                     <button
                       key={clip.id}
                       onClick={() => handleClipChange(idx)}
-                      className={`w-full text-left px-2 py-1 text-xs rounded transition-colors
+                      className={`w-full text-left px-2 py-1.5 text-xs rounded transition-colors flex items-center
                         ${idx === segments[selectedSegment]?.videoIndex
                           ? 'bg-cyan-600 text-white'
                           : 'text-slate-300 hover:bg-slate-700'}`}
                     >
-                      <span className={`inline-block w-2 h-2 rounded-full mr-2 ${getClipColor(idx)}`} />
-                      Clip {idx + 1}: {clip.name.slice(0, 20)}...
+                      <span className={`inline-block w-3 h-3 rounded mr-2 ${getClipColor(idx)}`} />
+                      <span className="font-bold mr-1">{idx + 1}:</span>
+                      <span className="truncate">{clip.name.slice(0, 18)}</span>
                     </button>
                   ))}
                 </div>
               )}
             </div>
 
-            {/* Change Transition Button */}
+            {/* Change Transition */}
             <div>
               <button
                 onClick={() => { setShowTransitionPicker(!showTransitionPicker); setShowClipPicker(false); }}
-                className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded text-sm transition-colors
-                  ${showTransitionPicker ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded text-sm font-medium transition-colors
+                  ${showTransitionPicker ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'}`}
               >
                 <ArrowRightLeft className="w-4 h-4" />
                 Transition
               </button>
 
               {showTransitionPicker && (
-                <div className="mt-2 bg-slate-900 rounded border border-slate-600 p-1">
+                <div className="mt-2 bg-slate-900 rounded border border-slate-600 p-1 shadow-xl">
                   {Object.values(TransitionType).map((t) => (
                     <button
                       key={t}
                       onClick={() => handleTransitionChange(t)}
-                      className={`w-full text-left px-2 py-1 text-xs rounded transition-colors flex items-center gap-2
+                      className={`w-full text-left px-2 py-1.5 text-xs rounded transition-colors flex items-center gap-2
                         ${t === segments[selectedSegment]?.transition
                           ? 'bg-purple-600 text-white'
                           : 'text-slate-300 hover:bg-slate-700'}`}
                     >
-                      <span>{TRANSITION_ICONS[t]}</span>
+                      <span className="text-sm">{TRANSITION_ICONS[t]}</span>
                       {TRANSITION_LABELS[t]}
                     </button>
                   ))}
                 </div>
               )}
             </div>
+
+            {/* Quick Duration Adjust */}
+            <div>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => adjustDuration(-0.1)}
+                  className="flex-1 flex items-center justify-center px-2 py-2.5 rounded text-sm font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
+                  title="Shorten by 0.1s"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  -0.1s
+                </button>
+                <button
+                  onClick={() => adjustDuration(0.1)}
+                  className="flex-1 flex items-center justify-center px-2 py-2.5 rounded text-sm font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
+                  title="Lengthen by 0.1s"
+                >
+                  +0.1s
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Segment Info */}
-          <div className="text-[10px] text-slate-500 font-mono flex gap-4">
-            <span>Start: {(segments[selectedSegment]?.startTime ?? 0).toFixed(2)}s</span>
-            <span>End: {(segments[selectedSegment]?.endTime ?? 0).toFixed(2)}s</span>
-            <span>Duration: {(segments[selectedSegment]?.duration ?? 0).toFixed(2)}s</span>
+          <div className="text-xs text-slate-500 font-mono flex gap-6 pt-2 border-t border-slate-700">
+            <span>Start: <span className="text-slate-300">{(segments[selectedSegment]?.startTime ?? 0).toFixed(2)}s</span></span>
+            <span>End: <span className="text-slate-300">{(segments[selectedSegment]?.endTime ?? 0).toFixed(2)}s</span></span>
+            <span>Duration: <span className="text-cyan-400">{(segments[selectedSegment]?.duration ?? 0).toFixed(2)}s</span></span>
           </div>
         </div>
       )}
-
-      {/* Instructions */}
-      <div className="text-center text-[9px] text-slate-600">
-        CLICK segment to edit | DRAG edges to resize
-      </div>
     </div>
   );
 };

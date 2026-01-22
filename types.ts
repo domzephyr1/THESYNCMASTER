@@ -6,6 +6,7 @@ export interface BeatMarker {
   phrasePosition?: number; // Position in 8 or 16 bar phrase
   isDrop?: boolean; // Energy spike after buildup
   isHeroMoment?: boolean; // Protected "money shot" moment
+  isManual?: boolean; // User-added beat (preserved on re-analyze)
 }
 
 export enum TransitionType {

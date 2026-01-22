@@ -300,26 +300,7 @@ function App() {
     }
   }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset, phraseData]);
 
-  const handleBeatToggle = useCallback((time: number) => {
-    setBeats(prevBeats => {
-      // Check for nearby beat (0.15s window)
-      const threshold = 0.15;
-      const existingIndex = prevBeats.findIndex(b => Math.abs(b.time - time) < threshold);
-
-      let newBeats = [...prevBeats];
-      if (existingIndex >= 0) {
-          // Remove
-          newBeats.splice(existingIndex, 1);
-      } else {
-          // Add
-          newBeats.push({ time, intensity: 1.0 });
-      }
-
-      // Sort
-      newBeats.sort((a, b) => a.time - b.time);
-      return newBeats;
-    });
-  }, []);
+  // handleBeatToggle now uses tracking version defined below
 
   const startAnalysis = async () => {
     if (!audioFile) return;
@@ -542,6 +523,56 @@ function App() {
     }
   };
 
+  // Track manually added beats (those with intensity === 1.0 and added via click)
+  const manualBeatsRef = useRef<Set<number>>(new Set());
+
+  // Update manual beats tracking when beats change via toggle
+  const handleBeatToggleWithTracking = useCallback((time: number) => {
+    setBeats(prevBeats => {
+      const threshold = 0.15;
+      const existingIndex = prevBeats.findIndex(b => Math.abs(b.time - time) < threshold);
+
+      let newBeats = [...prevBeats];
+      if (existingIndex >= 0) {
+        // Remove - also remove from manual tracking
+        manualBeatsRef.current.delete(prevBeats[existingIndex].time);
+        newBeats.splice(existingIndex, 1);
+      } else {
+        // Add - track as manual
+        manualBeatsRef.current.add(time);
+        newBeats.push({ time, intensity: 1.0, isManual: true });
+      }
+
+      newBeats.sort((a, b) => a.time - b.time);
+      return newBeats;
+    });
+  }, []);
+
+  // Regenerate segments only (keeps existing beats)
+  const handleRegenerateSegments = useCallback(() => {
+    if (beats.length === 0 || videoFiles.length === 0 || duration === 0) {
+      showToast("No beats or clips to regenerate");
+      return;
+    }
+
+    setIsPlaying(false);
+    setSeekSignal(0);
+
+    console.log("🔄 Regenerating segments from existing beats...");
+    const result = segmentationService.generateMontage(beats, videoFiles, duration, {
+      enableSpeedRamping,
+      enableSmartReorder,
+      preset: STYLE_PRESETS[currentPreset],
+      phraseData: phraseData || undefined
+    });
+    setSegments(result.segments);
+    setEstimatedBpm(result.bpm);
+    setSyncScore(result.averageScore);
+    showToast(`✓ Regenerated ${result.segments.length} segments`);
+
+    setTimeout(() => setSeekSignal(null), 100);
+  }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset, phraseData]);
+
   const handleReSync = useCallback(async () => {
     if (!audioBuffer) {
         console.warn("handleReSync: No audioBuffer available");
@@ -554,6 +585,10 @@ function App() {
       clearTimeout(autoResyncTimerRef.current);
       autoResyncTimerRef.current = null;
     }
+
+    // Save manual beats before re-analysis
+    const savedManualBeats = beats.filter(b => (b as any).isManual || manualBeatsRef.current.has(b.time));
+    console.log(`💾 Preserving ${savedManualBeats.length} manual beats`);
 
     // ALWAYS pause and reset - use longer delay to ensure state propagates
     setIsPlaying(false);
@@ -570,7 +605,21 @@ function App() {
         // Step 1: Detect new beats
         const { beats: detectedBeats, phraseData: detectedPhraseData } = await audioService.detectBeatsEnhanced(audioBuffer, minEnergy, peakSensitivity);
         console.log(`✅ Detected ${detectedBeats.length} beats`);
-        setBeats(detectedBeats);
+
+        // Step 2: Merge manual beats back in
+        const threshold = 0.15;
+        let mergedBeats = [...detectedBeats];
+        for (const manualBeat of savedManualBeats) {
+          // Only add if not too close to an existing beat
+          const exists = mergedBeats.some(b => Math.abs(b.time - manualBeat.time) < threshold);
+          if (!exists) {
+            mergedBeats.push({ ...manualBeat, isManual: true });
+          }
+        }
+        mergedBeats.sort((a, b) => a.time - b.time);
+        console.log(`✅ Merged beats: ${mergedBeats.length} (${savedManualBeats.length} manual preserved)`);
+
+        setBeats(mergedBeats);
         setPhraseData(detectedPhraseData);
 
         // Step 2: Regenerate segments with new beats
@@ -913,7 +962,7 @@ function App() {
                 duration={duration}
                 currentTime={currentTime}
                 onSeek={handleSeek}
-                onBeatToggle={handleBeatToggle}
+                onBeatToggle={handleBeatToggleWithTracking}
                 onBeatPreview={handleBeatPreview}
               />
 
@@ -1041,10 +1090,20 @@ function App() {
                  {isAnalyzing && (
                      <span className="text-xs text-cyan-400 animate-pulse">Syncing to rhythm...</span>
                  )}
-                <button 
+                <button
+                  onClick={handleRegenerateSegments}
+                  disabled={isAnalyzing}
+                  className="flex items-center px-3 py-2 bg-slate-800 hover:bg-slate-700 text-purple-400 text-xs font-bold rounded border border-slate-700 hover:border-purple-500 transition-all disabled:opacity-50"
+                  title="Keep your beats, just regenerate the video segments"
+                >
+                  <Layers className="w-3 h-3 mr-2" />
+                  REGENERATE SEGMENTS
+                </button>
+                <button
                   onClick={handleReSync}
                   disabled={isAnalyzing}
-                  className="flex items-center px-4 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-bold rounded border border-slate-700 hover:border-cyan-500 transition-all disabled:opacity-50"
+                  className="flex items-center px-3 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-bold rounded border border-slate-700 hover:border-cyan-500 transition-all disabled:opacity-50"
+                  title="Re-detect beats from audio (preserves manual beats)"
                 >
                   <RefreshCw className={`w-3 h-3 mr-2 ${isAnalyzing ? 'animate-spin' : ''}`} />
                   {isAnalyzing ? 'ANALYZING...' : 'RE-ANALYZE BEATS'}
