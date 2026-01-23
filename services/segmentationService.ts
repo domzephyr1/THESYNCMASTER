@@ -150,8 +150,10 @@ export class SegmentationService {
       const clipStartTime = this.calculateClipStartTime(clip, beat, segmentDuration, isHero);
 
       // --- Check if segment exceeds clip duration (prevent looping) ---
-      const clipAvailableDuration = (clip.trimEnd || clip.duration) - clipStartTime;
-      const needsSplit = segmentDuration > clipAvailableDuration && clipAvailableDuration > 0.5;
+      const clipEndTime = clip.trimEnd || clip.duration || 30; // Default to 30s if unknown
+      const clipAvailableDuration = Math.max(0, clipEndTime - clipStartTime);
+      // Only split if we have valid duration data and segment is longer than available
+      const needsSplit = clipAvailableDuration > 0 && segmentDuration > clipAvailableDuration && clipAvailableDuration > 0.5;
 
       // --- Speed Ramping ---
       let playbackSpeed = 1.0;
@@ -174,10 +176,18 @@ export class SegmentationService {
         let currentClipIndex = clipSelection.index;
         let currentClipStart = clipStartTime;
         let isFirstSplit = true;
+        let splitCount = 0;
+        const maxSplits = 10; // Safety limit to prevent infinite loops
 
-        while (remainingDuration > 0.2) {
+        while (remainingDuration > 0.2 && splitCount < maxSplits) {
+          splitCount++;
           const currentClip = videoClips[currentClipIndex];
-          const availableDuration = (currentClip.trimEnd || currentClip.duration) - currentClipStart;
+          if (!currentClip) {
+            console.warn(`Split: clip ${currentClipIndex} not found, breaking`);
+            break;
+          }
+          const clipEnd = currentClip.trimEnd || currentClip.duration || 30;
+          const availableDuration = Math.max(0.5, clipEnd - currentClipStart);
           const thisSegmentDuration = Math.min(remainingDuration, availableDuration);
 
           const splitSegment: EnhancedSyncSegment = {
