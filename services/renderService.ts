@@ -8,13 +8,14 @@ export class RenderService {
   private coreURL: string | null = null;
   private wasmURL: string | null = null;
 
-  async load(): Promise<boolean> {
+  async load(forceReload: boolean = false): Promise<boolean> {
     console.log('[RenderService] load() called, current state:', {
       hasInstance: !!this.ffmpeg,
-      loaded: this.loaded
+      loaded: this.loaded,
+      forceReload
     });
 
-    if (this.loaded && this.ffmpeg) {
+    if (this.loaded && this.ffmpeg && !forceReload) {
       console.log('[RenderService] Already loaded, skipping');
       return true;
     }
@@ -73,14 +74,28 @@ export class RenderService {
     }
   }
 
-  private async ensureLoaded(): Promise<FFmpeg> {
-    if (!this.ffmpeg || !this.loaded) {
-      const success = await this.load();
+  private async ensureLoaded(forceReload: boolean = false): Promise<FFmpeg> {
+    if (!this.ffmpeg || !this.loaded || forceReload) {
+      const success = await this.load(forceReload);
       if (!success || !this.ffmpeg) {
         throw new Error('FFmpeg failed to initialize');
       }
     }
     return this.ffmpeg;
+  }
+
+  private async restartFFmpeg(): Promise<FFmpeg> {
+    console.log('   🔄 Restarting FFmpeg to reset WASM memory...');
+    if (this.ffmpeg) {
+      try {
+        this.ffmpeg.terminate();
+      } catch (e) {
+        console.warn('[RenderService] Terminate warning:', e);
+      }
+      this.ffmpeg = null;
+      this.loaded = false;
+    }
+    return this.ensureLoaded(true);
   }
 
   async exportVideo(
@@ -119,7 +134,7 @@ export class RenderService {
     console.log('📦 STEP 1: Loading FFmpeg');
     console.log('───────────────────────────────────────────────────────');
 
-    const ffmpeg = await this.ensureLoaded();
+    let ffmpeg = await this.ensureLoaded();
 
     // Pre-fetch audio
     console.log('📥 Loading audio file...');
@@ -127,14 +142,22 @@ export class RenderService {
     console.log(`   Audio data: ${(audioData.length / 1024 / 1024).toFixed(2)} MB`);
 
     const BATCH_SIZE = 8;
+    const RESTART_EVERY_N_BATCHES = 3; // Restart FFmpeg every N batches to prevent memory corruption
     const segmentBlobs: Blob[] = [];
-    const loadedClipIds = new Set<number>();
+    let loadedClipIds = new Set<number>();
 
     console.log('───────────────────────────────────────────────────────');
     console.log(`📹 STEP 2: Processing ${segments.length} segments in batches of ${BATCH_SIZE}`);
+    console.log(`   (FFmpeg will restart every ${RESTART_EVERY_N_BATCHES} batches to prevent memory issues)`);
     console.log('───────────────────────────────────────────────────────');
 
     for (let batchNum = 0; batchNum * BATCH_SIZE < segments.length; batchNum++) {
+      // Restart FFmpeg periodically to reset WASM memory and prevent corruption
+      if (batchNum > 0 && batchNum % RESTART_EVERY_N_BATCHES === 0) {
+        // Clear loaded clips tracking since we're restarting
+        loadedClipIds.clear();
+        ffmpeg = await this.restartFFmpeg();
+      }
       const batchStart = batchNum * BATCH_SIZE;
       const batchEnd = Math.min(batchStart + BATCH_SIZE, segments.length);
       const batchSegments = segments.slice(batchStart, batchEnd);
@@ -253,6 +276,9 @@ export class RenderService {
     console.log('───────────────────────────────────────────────────────');
     onProgress(0.75);
 
+    // Restart FFmpeg with fresh memory for merge phase
+    ffmpeg = await this.restartFFmpeg();
+
     // Merge all segments
     const MERGE_CHUNK = 20;
     let mergedBlob: Blob | null = null;
@@ -313,6 +339,9 @@ export class RenderService {
     console.log('🎵 STEP 4: Adding audio');
     console.log('───────────────────────────────────────────────────────');
     onProgress(0.92);
+
+    // Restart FFmpeg with fresh memory for final mux
+    ffmpeg = await this.restartFFmpeg();
 
     const videoData = await fetchFile(mergedBlob);
     await ffmpeg.writeFile('video.mp4', videoData);

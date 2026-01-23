@@ -3,6 +3,7 @@ import { AppStep, BeatMarker, VideoClip, EnhancedSyncSegment, StylePreset, Phras
 import { audioService } from './services/audioAnalysis';
 import { videoAnalysisService } from './services/videoAnalysis';
 import { renderService } from './services/renderService';
+import { serverExportService } from './services/serverExportService';
 import { segmentationService } from './services/segmentationService';
 import { STYLE_PRESETS, getPresetList } from './services/presetService';
 import { sceneDetectionService, SceneMarker } from './services/sceneDetectionService';
@@ -12,7 +13,7 @@ import SegmentTrack from './components/SegmentTrack';
 import Player from './components/Player';
 import ClipManager from './components/ClipManager';
 import VideoTrimmer from './components/VideoTrimmer';
-import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers, Gauge, Sparkles, Scissors } from 'lucide-react';
+import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers, Gauge, Sparkles, Scissors, Server } from 'lucide-react';
 
 // Helpers
 const formatTime = (time: number) => {
@@ -778,13 +779,17 @@ function App() {
     console.log(`   Audio: ${audioFile.name}`);
 
     try {
-        // Add a 5-minute timeout for the entire export
+        // Dynamic timeout: 15 seconds per segment, minimum 5 minutes
+        const timeoutMs = Math.max(300000, segments.length * 15000);
+        const timeoutMinutes = Math.round(timeoutMs / 60000);
+        console.log(`   Timeout: ${timeoutMinutes} minutes for ${segments.length} segments`);
+
         const exportPromise = renderService.exportVideo(audioFile, segments, videoFiles, (p) => {
             setRenderProgress(Math.round(p * 100));
         });
 
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('Export timed out after 5 minutes. Try Quick Record instead.')), 300000);
+          setTimeout(() => reject(new Error(`Export timed out after ${timeoutMinutes} minutes. Try Quick Record instead.`)), timeoutMs);
         });
 
         const blob = await Promise.race([exportPromise, timeoutPromise]);
@@ -817,6 +822,60 @@ function App() {
 
         // Re-open export modal so user can try Quick Record
         setTimeout(() => setShowExportModal(true), 500);
+    }
+  };
+
+  // --- Server Export ---
+  const handleServerExport = async () => {
+    if(!audioFile) {
+      showToast("No audio file loaded");
+      return;
+    }
+    if(!segments || segments.length === 0) {
+      showToast("No segments to export. Generate sync first.");
+      return;
+    }
+    if(!videoFiles || videoFiles.length === 0) {
+      showToast("No video clips loaded");
+      return;
+    }
+
+    // Check if server is running
+    const serverAvailable = await serverExportService.checkServer();
+    if (!serverAvailable) {
+      showToast("Export server not running. Start it with: cd server && npm start", 5000);
+      return;
+    }
+
+    setIsRendering(true);
+    setRenderProgress(0);
+    setShowExportModal(false);
+
+    console.log("Starting server export...");
+
+    try {
+      const blob = await serverExportService.exportVideo(audioFile, segments, videoFiles, (p) => {
+        setRenderProgress(Math.round(p * 100));
+      });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `syncmaster_server_${Date.now()}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setIsRendering(false);
+      showToast("Server export complete!", 4000);
+
+    } catch (e) {
+      console.error("Server export failed:", e);
+      setIsRendering(false);
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      showToast(`Server export failed: ${errorMessage.slice(0, 60)}`, 4000);
+      setTimeout(() => setShowExportModal(true), 500);
     }
   };
 
@@ -1220,20 +1279,37 @@ function App() {
               </div>
 
               <div className="space-y-3">
-                 <h4 className="text-sm font-semibold text-yellow-400 uppercase tracking-wider">Option B: High Quality Render</h4>
+                 <h4 className="text-sm font-semibold text-yellow-400 uppercase tracking-wider">Option B: Browser Render</h4>
                  <p className="text-xs text-slate-400">
-                    Frame-perfect assembly using FFmpeg. (Slower)
+                    FFmpeg in browser. May timeout on large projects.
                  </p>
-                 <button 
+                 <button
                    onClick={handleFFmpegExport}
-                   className="w-full flex items-center justify-center py-3 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded transition-colors shadow-lg shadow-cyan-500/20"
+                   className="w-full flex items-center justify-center py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded transition-colors"
                  >
                    <Cpu className="w-5 h-5 mr-2" />
-                   Render .MP4 (FFmpeg)
+                   Render .MP4 (Browser)
                  </button>
               </div>
 
-              <button 
+              <div className="space-y-3">
+                 <h4 className="text-sm font-semibold text-green-400 uppercase tracking-wider">Option C: Server Render (Recommended)</h4>
+                 <p className="text-xs text-slate-400">
+                    Local server with native FFmpeg. Fast and reliable.
+                 </p>
+                 <button
+                   onClick={handleServerExport}
+                   className="w-full flex items-center justify-center py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded transition-colors shadow-lg shadow-green-500/20"
+                 >
+                   <Server className="w-5 h-5 mr-2" />
+                   Render .MP4 (Server)
+                 </button>
+                 <p className="text-xs text-slate-500">
+                    Requires: cd server && npm install && npm start
+                 </p>
+              </div>
+
+              <button
                 onClick={() => setShowExportModal(false)}
                 className="w-full pt-2 text-xs text-slate-500 hover:text-white transition-colors"
               >
