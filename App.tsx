@@ -911,7 +911,7 @@ function App() {
       const videoUrl = await shotstackService.exportVideo(
         audioFile,
         segments,
-        videoClips,
+        videoFiles,
         (progress, status) => {
           setRenderProgress(Math.round(progress * 100));
           setCloudRenderStatus(status);
