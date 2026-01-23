@@ -98,13 +98,13 @@ export class ShotstackService {
     console.log(`Uploading file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
 
     // Step 1: Get a signed upload URL from Ingest API
+    // IMPORTANT: No body - just headers
     const signedRes = await fetch(`${this.ingestUrl}/upload`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
         'Accept': 'application/json'
-      },
-      body: JSON.stringify({})
+      }
     });
 
     if (!signedRes.ok) {
