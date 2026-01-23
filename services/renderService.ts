@@ -97,48 +97,63 @@ export class RenderService {
       await ffmpeg.writeFile('audio.mp3', audioData);
       console.log("✓ Audio loaded");
 
-      // 2. Write only the video clips we need
-      const usedIndices = [...new Set(workingSegments.map(s => s.videoIndex))];
-      console.log(`📹 Loading ${usedIndices.length} unique clips: [${usedIndices.join(', ')}]`);
-
-      for (const i of usedIndices) {
-        const clip = videoClips[i];
-        if (!clip) {
-          console.error(`❌ Clip ${i} not found in videoClips array (length: ${videoClips.length})`);
-          throw new Error(`Clip ${i} not found. Please re-upload videos.`);
-        }
-
-        try {
-          let videoData: Uint8Array;
-          if (clip.file) {
-            console.log(`  → Loading clip ${i} from file: ${clip.name} (${(clip.file.size / 1024 / 1024).toFixed(2)} MB)`);
-            videoData = await fetchFile(clip.file);
-          } else if (clip.url) {
-            console.log(`  → Loading clip ${i} from URL: ${clip.name}`);
-            videoData = await fetchFile(clip.url);
-          } else {
-            throw new Error(`Clip ${i} has no file or URL`);
-          }
-
-          await ffmpeg.writeFile(`v${i}.mp4`, videoData);
-          console.log(`  ✓ Loaded clip ${i}: ${clip.name}`);
-        } catch (clipError) {
-          console.error(`❌ Failed to load clip ${i}:`, clipError);
-          throw new Error(`Failed to load clip "${clip.name}": ${clipError instanceof Error ? clipError.message : 'Unknown error'}`);
-        }
-      }
-
-      // 3. Process in batches to manage memory for long songs
-      const BATCH_SIZE = 25;
+      // 2. Process segments in SMALL batches to avoid memory issues
+      // Load only clips needed for each batch, then unload them
+      const BATCH_SIZE = 10; // Smaller batches for memory efficiency
       const totalBatches = Math.ceil(workingSegments.length / BATCH_SIZE);
       let intermediateFiles: string[] = [];
+      const loadedClips = new Set<number>();
+
+      console.log(`📹 Processing ${workingSegments.length} segments in ${totalBatches} batches (${BATCH_SIZE} per batch)`);
 
       for (let batch = 0; batch < totalBatches; batch++) {
         const batchStart = batch * BATCH_SIZE;
         const batchEnd = Math.min(batchStart + BATCH_SIZE, workingSegments.length);
         const batchSegments = workingSegments.slice(batchStart, batchEnd);
 
-        console.log(`📦 Processing batch ${batch + 1}/${totalBatches} (segments ${batchStart + 1}-${batchEnd})`);
+        console.log(`📦 Batch ${batch + 1}/${totalBatches} (segments ${batchStart + 1}-${batchEnd})`);
+
+        // Find which clips this batch needs
+        const batchClipIndices = [...new Set(batchSegments.map(s => s.videoIndex))];
+
+        // Unload clips from previous batch that we don't need anymore
+        for (const loadedIdx of loadedClips) {
+          if (!batchClipIndices.includes(loadedIdx)) {
+            try {
+              await ffmpeg.deleteFile(`v${loadedIdx}.mp4`);
+              loadedClips.delete(loadedIdx);
+              console.log(`  🗑️ Unloaded clip ${loadedIdx}`);
+            } catch {}
+          }
+        }
+
+        // Load clips needed for this batch (if not already loaded)
+        for (const clipIdx of batchClipIndices) {
+          if (loadedClips.has(clipIdx)) continue;
+
+          const clip = videoClips[clipIdx];
+          if (!clip) {
+            console.warn(`  ⚠️ Clip ${clipIdx} not found, skipping`);
+            continue;
+          }
+
+          try {
+            let videoData: Uint8Array;
+            if (clip.file) {
+              videoData = await fetchFile(clip.file);
+            } else if (clip.url) {
+              videoData = await fetchFile(clip.url);
+            } else {
+              console.warn(`  ⚠️ Clip ${clipIdx} has no file/URL`);
+              continue;
+            }
+            await ffmpeg.writeFile(`v${clipIdx}.mp4`, videoData);
+            loadedClips.add(clipIdx);
+            console.log(`  ✓ Loaded clip ${clipIdx}: ${clip.name}`);
+          } catch (e) {
+            console.error(`  ❌ Failed to load clip ${clipIdx}:`, e);
+          }
+        }
 
         const segmentFiles: string[] = [];
 
@@ -149,9 +164,15 @@ export class RenderService {
           const clipIdx = seg.videoIndex;
           const segFile = `seg${globalIdx}.mp4`;
 
+          // Skip if clip wasn't loaded
+          if (!loadedClips.has(clipIdx)) {
+            console.warn(`  ⚠️ Skipping segment ${globalIdx} - clip ${clipIdx} not loaded`);
+            continue;
+          }
+
           // Validate segment data
           if (!isFinite(seg.clipStartTime) || !isFinite(seg.duration) || seg.duration <= 0) {
-            console.warn(`⚠️ Skipping invalid segment ${globalIdx}: start=${seg.clipStartTime}, duration=${seg.duration}`);
+            console.warn(`  ⚠️ Skipping invalid segment ${globalIdx}`);
             continue;
           }
 
@@ -172,8 +193,7 @@ export class RenderService {
             await ffmpeg.exec(extractCmd);
             segmentFiles.push(segFile);
           } catch (segError) {
-            console.error(`❌ Failed to extract segment ${globalIdx} from clip ${clipIdx}:`, segError);
-            // Continue with other segments rather than failing completely
+            console.error(`  ❌ Segment ${globalIdx} failed:`, segError);
           }
 
           const overallProgress = (globalIdx + 1) / workingSegments.length * 0.7;
@@ -182,7 +202,7 @@ export class RenderService {
 
         // Concat this batch into an intermediate file
         if (segmentFiles.length === 0) {
-          console.warn(`⚠️ Batch ${batch + 1} has no valid segments, skipping`);
+          console.warn(`  ⚠️ Batch ${batch + 1} has no valid segments, skipping`);
           continue;
         }
 
@@ -207,8 +227,14 @@ export class RenderService {
         }
         try { await ffmpeg.deleteFile(`list${batch}.txt`); } catch {}
 
-        console.log(`✓ Batch ${batch + 1} complete`);
+        console.log(`  ✓ Batch ${batch + 1} complete`);
       }
+
+      // Unload all remaining clips
+      for (const loadedIdx of loadedClips) {
+        try { await ffmpeg.deleteFile(`v${loadedIdx}.mp4`); } catch {}
+      }
+      loadedClips.clear();
 
       // 4. Final concat of all batches with audio
       if (intermediateFiles.length === 0) {
@@ -264,13 +290,10 @@ export class RenderService {
 
       console.log(`✅ Export complete! File size: ${((data as Uint8Array).length / 1024 / 1024).toFixed(2)} MB`);
 
-      // 7. Cleanup
+      // 7. Cleanup (clips already unloaded during batch processing)
       try {
         await ffmpeg.deleteFile('audio.mp3');
         await ffmpeg.deleteFile('output.mp4');
-        for (const i of usedIndices) {
-          try { await ffmpeg.deleteFile(`v${i}.mp4`); } catch {}
-        }
         for (const f of intermediateFiles) {
           try { await ffmpeg.deleteFile(f); } catch {}
         }
