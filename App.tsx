@@ -4,6 +4,7 @@ import { audioService } from './services/audioAnalysis';
 import { videoAnalysisService } from './services/videoAnalysis';
 import { renderService } from './services/renderService';
 import { serverExportService } from './services/serverExportService';
+import { shotstackService } from './services/shotstackService';
 import { segmentationService } from './services/segmentationService';
 import { STYLE_PRESETS, getPresetList } from './services/presetService';
 import { sceneDetectionService, SceneMarker } from './services/sceneDetectionService';
@@ -13,7 +14,7 @@ import SegmentTrack from './components/SegmentTrack';
 import Player from './components/Player';
 import ClipManager from './components/ClipManager';
 import VideoTrimmer from './components/VideoTrimmer';
-import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers, Gauge, Sparkles, Scissors, Server } from 'lucide-react';
+import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers, Gauge, Sparkles, Scissors, Server, Cloud } from 'lucide-react';
 
 // Helpers
 const formatTime = (time: number) => {
@@ -89,6 +90,10 @@ function App() {
   // Modals
   const [showExportModal, setShowExportModal] = useState(false);
   const [trimmingClip, setTrimmingClip] = useState<VideoClip | null>(null);
+
+  // Shotstack Cloud Export
+  const [shotstackApiKey, setShotstackApiKey] = useState(() => localStorage.getItem('shotstack_api_key') || '');
+  const [cloudRenderStatus, setCloudRenderStatus] = useState('');
 
   // Scene Detection State
   const [clipScenes, setClipScenes] = useState<Record<string, SceneMarker[]>>({});
@@ -879,6 +884,57 @@ function App() {
     }
   };
 
+  // --- Shotstack Cloud Export ---
+  const handleCloudExport = async () => {
+    if (!audioFile || segments.length === 0) {
+      showToast("No segments to export. Generate sync first.");
+      return;
+    }
+
+    if (!shotstackApiKey) {
+      showToast("Please enter your Shotstack API key first.", 4000);
+      return;
+    }
+
+    // Save API key for future use
+    localStorage.setItem('shotstack_api_key', shotstackApiKey);
+    shotstackService.setApiKey(shotstackApiKey);
+
+    setIsRendering(true);
+    setRenderProgress(0);
+    setCloudRenderStatus('Starting...');
+    setShowExportModal(false);
+
+    console.log("☁️ Starting Shotstack cloud export...");
+
+    try {
+      const videoUrl = await shotstackService.exportVideo(
+        audioFile,
+        segments,
+        videoClips,
+        (progress, status) => {
+          setRenderProgress(Math.round(progress * 100));
+          setCloudRenderStatus(status);
+        }
+      );
+
+      // Open the video URL in a new tab for download
+      window.open(videoUrl, '_blank');
+
+      setIsRendering(false);
+      setCloudRenderStatus('');
+      showToast("Cloud export complete! Video opened in new tab.", 5000);
+
+    } catch (e) {
+      console.error("Cloud export failed:", e);
+      setIsRendering(false);
+      setCloudRenderStatus('');
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      showToast(`Cloud export failed: ${errorMessage.slice(0, 80)}`, 5000);
+      setTimeout(() => setShowExportModal(true), 500);
+    }
+  };
+
 
   useEffect(() => {
     if (isRecording && !isPlaying) {
@@ -1246,13 +1302,15 @@ function App() {
             <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black/95">
                 <div className="w-64 space-y-4">
                     <div className="flex justify-between text-cyan-400 font-mono text-sm">
-                        <span>RENDERING VIDEO</span>
+                        <span>{cloudRenderStatus ? 'CLOUD RENDER' : 'RENDERING VIDEO'}</span>
                         <span>{renderProgress}%</span>
                     </div>
                     <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-                        <div className="h-full bg-cyan-500 transition-all duration-300" style={{ width: `${renderProgress}%` }}></div>
+                        <div className={`h-full transition-all duration-300 ${cloudRenderStatus ? 'bg-purple-500' : 'bg-cyan-500'}`} style={{ width: `${renderProgress}%` }}></div>
                     </div>
-                    <p className="text-xs text-slate-500 text-center animate-pulse">Running FFmpeg Wasm Core...</p>
+                    <p className="text-xs text-slate-500 text-center animate-pulse">
+                      {cloudRenderStatus || 'Running FFmpeg Wasm Core...'}
+                    </p>
                 </div>
             </div>
         )}
@@ -1293,19 +1351,44 @@ function App() {
               </div>
 
               <div className="space-y-3">
-                 <h4 className="text-sm font-semibold text-green-400 uppercase tracking-wider">Option C: Server Render (Recommended)</h4>
+                 <h4 className="text-sm font-semibold text-green-400 uppercase tracking-wider">Option C: Server Render</h4>
                  <p className="text-xs text-slate-400">
                     Local server with native FFmpeg. Fast and reliable.
                  </p>
                  <button
                    onClick={handleServerExport}
-                   className="w-full flex items-center justify-center py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded transition-colors shadow-lg shadow-green-500/20"
+                   className="w-full flex items-center justify-center py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded transition-colors"
                  >
                    <Server className="w-5 h-5 mr-2" />
                    Render .MP4 (Server)
                  </button>
                  <p className="text-xs text-slate-500">
                     Requires: cd server && npm install && npm start
+                 </p>
+              </div>
+
+              <div className="space-y-3 border-t border-slate-700 pt-4">
+                 <h4 className="text-sm font-semibold text-purple-400 uppercase tracking-wider">Option D: Cloud Render (Recommended)</h4>
+                 <p className="text-xs text-slate-400">
+                    Shotstack cloud API. Works anywhere, no local setup needed.
+                 </p>
+                 <input
+                   type="password"
+                   placeholder="Shotstack API Key"
+                   value={shotstackApiKey}
+                   onChange={(e) => setShotstackApiKey(e.target.value)}
+                   className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                 />
+                 <button
+                   onClick={handleCloudExport}
+                   disabled={!shotstackApiKey}
+                   className="w-full flex items-center justify-center py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold rounded transition-colors shadow-lg shadow-purple-500/20"
+                 >
+                   <Cloud className="w-5 h-5 mr-2" />
+                   Render .MP4 (Cloud)
+                 </button>
+                 <p className="text-xs text-slate-500">
+                    Free: 20 min/month at <a href="https://shotstack.io" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">shotstack.io</a>
                  </p>
               </div>
 
