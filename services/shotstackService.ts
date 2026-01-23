@@ -86,45 +86,96 @@ export class ShotstackService {
     }
   }
 
+  // Ingest API has a different base URL
+  private get ingestUrl() {
+    return this.useStage
+      ? 'https://api.shotstack.io/ingest/stage'
+      : 'https://api.shotstack.io/ingest/v1';
+  }
+
   // Upload a file to get a public URL using Shotstack's Ingest API
   async uploadFile(file: File): Promise<string> {
-    // First, get a signed upload URL
-    const signedRes = await fetch(`${this.baseUrl}/ingest`, {
+    console.log(`Uploading file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+
+    // Step 1: Get a signed upload URL from Ingest API
+    const signedRes = await fetch(`${this.ingestUrl}/upload`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
-        'Content-Type': 'application/json'
+        'Accept': 'application/json'
       },
       body: JSON.stringify({})
     });
 
     if (!signedRes.ok) {
-      throw new Error('Failed to get upload URL from Shotstack');
+      const errorText = await signedRes.text();
+      console.error('Signed URL error:', signedRes.status, errorText);
+      throw new Error(`Failed to get upload URL: ${signedRes.status}`);
     }
 
     const signedData = await signedRes.json();
-    const uploadUrl = signedData.response?.url;
-    const sourceId = signedData.response?.id;
+    console.log('Signed URL response:', signedData);
+
+    const uploadUrl = signedData.data?.attributes?.url;
+    const sourceId = signedData.data?.id;
 
     if (!uploadUrl) {
-      throw new Error('No upload URL received from Shotstack');
+      throw new Error('No upload URL in response');
     }
 
-    // Upload the file
+    // Step 2: Upload the file to the signed URL
+    // IMPORTANT: Do NOT include Content-Type header per Shotstack docs
     const uploadRes = await fetch(uploadUrl, {
       method: 'PUT',
-      headers: {
-        'Content-Type': file.type || 'video/mp4'
-      },
       body: file
     });
 
     if (!uploadRes.ok) {
-      throw new Error('Failed to upload file to Shotstack');
+      throw new Error(`Upload failed: ${uploadRes.status}`);
     }
 
-    // Return the source URL that Shotstack can use
-    return `https://cdn.shotstack.io/ingest/${this.useStage ? 'stage' : 'v1'}/${sourceId}`;
+    console.log(`File uploaded, source ID: ${sourceId}`);
+
+    // Step 3: Wait for the file to be processed and get the final URL
+    const sourceUrl = await this.waitForSource(sourceId);
+    return sourceUrl;
+  }
+
+  // Wait for uploaded file to be processed and return its URL
+  async waitForSource(sourceId: string): Promise<string> {
+    const maxAttempts = 60; // 3 minutes max
+
+    for (let i = 0; i < maxAttempts; i++) {
+      const res = await fetch(`${this.ingestUrl}/sources/${sourceId}`, {
+        headers: {
+          'x-api-key': this.apiKey,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to check source status: ${res.status}`);
+      }
+
+      const data = await res.json();
+      const status = data.data?.attributes?.status;
+      const url = data.data?.attributes?.url;
+
+      console.log(`Source ${sourceId} status: ${status}`);
+
+      if (status === 'ready' && url) {
+        return url;
+      }
+
+      if (status === 'failed') {
+        throw new Error('File processing failed');
+      }
+
+      // Wait 3 seconds before checking again
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+
+    throw new Error('Timeout waiting for file to process');
   }
 
   // Convert our segments to Shotstack timeline format
