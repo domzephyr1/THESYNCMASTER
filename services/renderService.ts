@@ -1,398 +1,268 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
-import { EnhancedSyncSegment, VideoClip } from '../types';
+import { SyncSegment, VideoClip } from '../types';
 
 export class RenderService {
   private ffmpeg: FFmpeg | null = null;
   private loaded: boolean = false;
-  private coreURL: string | null = null;
-  private wasmURL: string | null = null;
 
-  async load(forceReload: boolean = false): Promise<boolean> {
-    console.log('[RenderService] load() called, current state:', {
-      hasInstance: !!this.ffmpeg,
+  private log(message: string, ...args: any[]) {
+    console.log(`[RenderService] ${message}`, ...args);
+  }
+
+  async load(forceReload: boolean = false) {
+    this.log('load() called, current state:', { 
+      hasInstance: !!this.ffmpeg, 
       loaded: this.loaded,
-      forceReload
+      forceReload 
     });
 
-    if (this.loaded && this.ffmpeg && !forceReload) {
-      console.log('[RenderService] Already loaded, skipping');
-      return true;
-    }
-
-    // Clean up any existing instance
-    if (this.ffmpeg) {
-      console.log('[RenderService] Terminating existing instance...');
+    if (this.loaded && !forceReload) return;
+    
+    // If forcing reload, terminate existing instance
+    if (forceReload && this.ffmpeg) {
+      this.log('Terminating existing FFmpeg instance...');
       try {
         this.ffmpeg.terminate();
       } catch (e) {
-        console.warn('[RenderService] Terminate warning:', e);
+        this.log('Terminate error (ignored):', e);
       }
       this.ffmpeg = null;
+      this.loaded = false;
     }
 
-    this.loaded = false;
+    this.log('Creating new FFmpeg instance...');
+    this.ffmpeg = new FFmpeg();
+    
+    if (!crossOriginIsolated) {
+      console.warn("SharedArrayBuffer not available - COOP/COEP headers missing");
+    }
 
+    const baseURL = '/ffmpeg';
+    
     try {
-      console.log('[RenderService] Creating new FFmpeg instance...');
-      this.ffmpeg = new FFmpeg();
-
-      this.ffmpeg.on('log', ({ message }) => {
-        // Only log important messages to reduce noise
-        if (message.includes('error') || message.includes('Error') || message.includes('failed')) {
-          console.log('[FFmpeg]', message);
-        }
-      });
-
-      const baseURL = '/ffmpeg';
-
-      // Cache blob URLs
-      if (!this.coreURL) {
-        console.log('[RenderService] Fetching core.js...');
-        this.coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-      }
-      if (!this.wasmURL) {
-        console.log('[RenderService] Fetching core.wasm...');
-        this.wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-      }
-
-      console.log('[RenderService] Loading FFmpeg WASM...');
+      this.log('Loading FFmpeg WASM...');
       await this.ffmpeg.load({
-        coreURL: this.coreURL,
-        wasmURL: this.wasmURL,
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
       });
-
       this.loaded = true;
-      console.log('[RenderService] ✅ FFmpeg loaded successfully');
-      return true;
-
+      this.log('✅ FFmpeg loaded successfully');
     } catch (e) {
-      console.error('[RenderService] ❌ FFmpeg load failed:', e);
-      this.ffmpeg = null;
-      this.loaded = false;
-      return false;
+      console.error("Failed to load FFmpeg", e);
+      throw new Error("FFmpeg failed to initialize. Server may be missing COOP/COEP headers.");
     }
   }
 
-  private async ensureLoaded(forceReload: boolean = false): Promise<FFmpeg> {
-    if (!this.ffmpeg || !this.loaded || forceReload) {
-      const success = await this.load(forceReload);
-      if (!success || !this.ffmpeg) {
-        throw new Error('FFmpeg failed to initialize');
-      }
-    }
-    return this.ffmpeg;
+  /**
+   * Restart FFmpeg to clear WASM memory
+   */
+  private async restartFFmpeg() {
+    this.log('🔄 Restarting FFmpeg to reset WASM memory...');
+    await this.load(true);
   }
 
-  private async restartFFmpeg(): Promise<FFmpeg> {
-    console.log('   🔄 Restarting FFmpeg to reset WASM memory...');
-    if (this.ffmpeg) {
+  /**
+   * Clean up files from FFmpeg virtual filesystem
+   */
+  private async cleanup(files: string[]) {
+    if (!this.ffmpeg) return;
+    for (const file of files) {
       try {
-        this.ffmpeg.terminate();
+        await this.ffmpeg.deleteFile(file);
       } catch (e) {
-        console.warn('[RenderService] Terminate warning:', e);
+        // File may not exist, ignore
       }
-      this.ffmpeg = null;
-      this.loaded = false;
     }
-    return this.ensureLoaded(true);
   }
 
   async exportVideo(
     audioFile: File,
-    segments: EnhancedSyncSegment[],
+    segments: SyncSegment[],
     videoClips: VideoClip[],
     onProgress: (progress: number) => void
   ): Promise<Blob> {
+    // Configuration
+    const CHUNK_SIZE = 20; // Process 20 segments at a time
+    const OUTPUT_WIDTH = 1280;
+    const OUTPUT_HEIGHT = 720;
+
     console.log('═══════════════════════════════════════════════════════');
-    console.log('🎬 EXPORT STARTING');
+    console.log('🎬 STARTING CHUNKED EXPORT');
+    console.log(`   Segments: ${segments.length}, Clips: ${videoClips.length}`);
+    console.log(`   Chunk size: ${CHUNK_SIZE}`);
     console.log('═══════════════════════════════════════════════════════');
-    console.log(`   Audio: ${audioFile.name} (${(audioFile.size / 1024 / 1024).toFixed(2)} MB)`);
-    console.log(`   Segments: ${segments.length}`);
-    console.log(`   Clips: ${videoClips.length}`);
 
-    // Validate inputs
-    if (!segments?.length) throw new Error('No segments to render');
-    if (!videoClips?.length) throw new Error('No video clips available');
-    if (!audioFile) throw new Error('No audio file available');
+    await this.load();
+    const ffmpeg = this.ffmpeg!;
 
-    const clipsWithFiles = videoClips.filter(c => c.file || c.url);
-    if (clipsWithFiles.length === 0) {
-      throw new Error('Video clips are missing file data. Please re-upload videos.');
-    }
+    const totalChunks = Math.ceil(segments.length / CHUNK_SIZE);
+    const chunkOutputs: string[] = [];
 
-    const invalidSegments = segments.filter(s => s.videoIndex < 0 || s.videoIndex >= videoClips.length);
-    if (invalidSegments.length > 0) {
-      throw new Error(`${invalidSegments.length} segments reference invalid clips`);
-    }
+    // STEP 1: Process segments in chunks
+    for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+      const chunkStart = chunkIdx * CHUNK_SIZE;
+      const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, segments.length);
+      const chunkSegments = segments.slice(chunkStart, chunkEnd);
 
-    console.log(`   Duration range: ${Math.min(...segments.map(s => s.duration)).toFixed(2)}s - ${Math.max(...segments.map(s => s.duration)).toFixed(2)}s`);
-    console.log(`   Total duration: ${segments.reduce((sum, s) => sum + s.duration, 0).toFixed(2)}s`);
+      console.log('───────────────────────────────────────────────────────');
+      console.log(`🔄 Processing chunk ${chunkIdx + 1}/${totalChunks}: segments ${chunkStart + 1}-${chunkEnd}`);
 
-    // Load FFmpeg ONCE at the start - no reloading during export
-    console.log('───────────────────────────────────────────────────────');
-    console.log('📦 STEP 1: Loading FFmpeg');
-    console.log('───────────────────────────────────────────────────────');
+      // Find which clips this chunk needs
+      const neededClipIndices = new Set(chunkSegments.map(s => s.videoIndex));
+      const loadedFiles: string[] = [];
 
-    let ffmpeg = await this.ensureLoaded();
-
-    // Pre-fetch audio
-    console.log('📥 Loading audio file...');
-    const audioData = await fetchFile(audioFile);
-    console.log(`   Audio data: ${(audioData.length / 1024 / 1024).toFixed(2)} MB`);
-
-    const BATCH_SIZE = 8;
-    const RESTART_EVERY_N_BATCHES = 3; // Restart FFmpeg every N batches to prevent memory corruption
-    const segmentBlobs: Blob[] = [];
-    let loadedClipIds = new Set<number>();
-
-    console.log('───────────────────────────────────────────────────────');
-    console.log(`📹 STEP 2: Processing ${segments.length} segments in batches of ${BATCH_SIZE}`);
-    console.log(`   (FFmpeg will restart every ${RESTART_EVERY_N_BATCHES} batches to prevent memory issues)`);
-    console.log('───────────────────────────────────────────────────────');
-
-    for (let batchNum = 0; batchNum * BATCH_SIZE < segments.length; batchNum++) {
-      // Restart FFmpeg periodically to reset WASM memory and prevent corruption
-      if (batchNum > 0 && batchNum % RESTART_EVERY_N_BATCHES === 0) {
-        // Clear loaded clips tracking since we're restarting
-        loadedClipIds.clear();
-        ffmpeg = await this.restartFFmpeg();
+      // Load only needed clips for this chunk
+      for (const clipIdx of neededClipIndices) {
+        const clip = videoClips[clipIdx];
+        if (!clip?.file) {
+          console.warn(`   ⚠️ Clip ${clipIdx} missing file, skipping`);
+          continue;
+        }
+        const filename = `clip${clipIdx}.mp4`;
+        console.log(`   📂 Loading: ${clip.name} (${(clip.file.size / 1024 / 1024).toFixed(1)}MB)`);
+        await ffmpeg.writeFile(filename, await fetchFile(clip.file));
+        loadedFiles.push(filename);
       }
-      const batchStart = batchNum * BATCH_SIZE;
-      const batchEnd = Math.min(batchStart + BATCH_SIZE, segments.length);
-      const batchSegments = segments.slice(batchStart, batchEnd);
 
-      console.log(`\n📦 BATCH ${batchNum + 1}: Segments ${batchStart + 1}-${batchEnd}`);
+      // Build filter for this chunk
+      let filterComplex = '';
+      const inputMap = new Map<number, number>();
+      let inputCounter = 0;
 
-      // Find clips needed for this batch
-      const neededClipIds = [...new Set(batchSegments.map(s => s.videoIndex))];
+      for (const clipIdx of neededClipIndices) {
+        inputMap.set(clipIdx, inputCounter++);
+      }
 
-      // Unload clips we don't need anymore (free memory)
-      for (const loadedId of loadedClipIds) {
-        if (!neededClipIds.includes(loadedId)) {
+      // Create trim filters for each segment
+      chunkSegments.forEach((seg, idx) => {
+        const inputIdx = inputMap.get(seg.videoIndex);
+        if (inputIdx === undefined) return;
+        
+        filterComplex += `[${inputIdx}:v]trim=start=${seg.clipStartTime}:duration=${seg.duration},setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${idx}];`;
+      });
+
+      // Concat all segments in this chunk
+      filterComplex += chunkSegments.map((_, i) => `[v${i}]`).join('');
+      filterComplex += `concat=n=${chunkSegments.length}:v=1:a=0[outv]`;
+
+      const chunkOutput = `chunk_${chunkIdx}.mp4`;
+      
+      const cmd = [
+        ...Array.from(neededClipIndices).map(i => ['-i', `clip${i}.mp4`]).flat(),
+        '-filter_complex', filterComplex,
+        '-map', '[outv]',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p',
+        '-y',
+        chunkOutput
+      ];
+
+      await ffmpeg.exec(cmd);
+      chunkOutputs.push(chunkOutput);
+
+      // Clean up input clips to free memory
+      await this.cleanup(loadedFiles);
+
+      // Report progress
+      const chunkProgress = (chunkIdx + 1) / (totalChunks + 2); // +2 for merge and audio steps
+      onProgress(chunkProgress * 0.7); // 70% for chunk processing
+
+      console.log(`   ✅ Chunk ${chunkIdx + 1} complete`);
+
+      // Restart FFmpeg every few chunks to prevent memory buildup
+      if ((chunkIdx + 1) % 3 === 0 && chunkIdx < totalChunks - 1) {
+        // Save chunk outputs before restart
+        const savedChunks: Map<string, Uint8Array> = new Map();
+        for (const output of chunkOutputs) {
           try {
-            await ffmpeg.deleteFile(`v${loadedId}.mp4`);
-            loadedClipIds.delete(loadedId);
-            console.log(`   🗑️ Unloaded clip ${loadedId + 1}`);
-          } catch {}
-        }
-      }
-
-      // Load clips we need
-      for (const clipId of neededClipIds) {
-        if (loadedClipIds.has(clipId)) continue;
-
-        const clip = videoClips[clipId];
-        if (!clip) {
-          console.warn(`   ⚠️ Clip ${clipId + 1} not found`);
-          continue;
-        }
-
-        console.log(`   📥 Loading clip ${clipId + 1}: ${clip.name}...`);
-        try {
-          const videoData = clip.file
-            ? await fetchFile(clip.file)
-            : clip.url
-              ? await fetchFile(clip.url)
-              : null;
-
-          if (!videoData) {
-            console.warn(`   ⚠️ Clip ${clipId + 1} has no data`);
-            continue;
+            const data = await ffmpeg.readFile(output);
+            savedChunks.set(output, data as Uint8Array);
+          } catch (e) {
+            console.warn(`   Could not save ${output}:`, e);
           }
-
-          await ffmpeg.writeFile(`v${clipId}.mp4`, videoData);
-          loadedClipIds.add(clipId);
-          console.log(`   ✅ Clip ${clipId + 1} loaded (${(videoData.length / 1024 / 1024).toFixed(2)} MB)`);
-        } catch (e) {
-          console.error(`   ❌ Failed to load clip ${clipId + 1}:`, e);
-        }
-      }
-
-      // Process each segment in this batch
-      for (let i = 0; i < batchSegments.length; i++) {
-        const seg = batchSegments[i];
-        const globalIdx = batchStart + i;
-        const clipId = seg.videoIndex;
-
-        if (!isFinite(seg.clipStartTime) || !isFinite(seg.duration) || seg.duration <= 0) {
-          console.warn(`   ⚠️ Segment ${globalIdx + 1}: Invalid data, skipping`);
-          continue;
         }
 
-        if (!loadedClipIds.has(clipId)) {
-          console.warn(`   ⚠️ Segment ${globalIdx + 1}: Clip ${clipId + 1} not loaded, skipping`);
-          continue;
+        await this.restartFFmpeg();
+
+        // Restore chunk outputs
+        for (const [name, data] of savedChunks) {
+          await this.ffmpeg!.writeFile(name, data);
         }
-
-        const segFile = `seg_${globalIdx}.mp4`;
-
-        console.log(`   🎞️ Segment ${globalIdx + 1}/${segments.length}: clip=${clipId + 1}, start=${seg.clipStartTime.toFixed(2)}s, dur=${seg.duration.toFixed(2)}s`);
-
-        try {
-          await ffmpeg.exec([
-            '-ss', seg.clipStartTime.toFixed(3),
-            '-i', `v${clipId}.mp4`,
-            '-t', seg.duration.toFixed(3),
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', '28',
-            '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30',
-            '-an',
-            '-y',
-            segFile
-          ]);
-
-          const segData = await ffmpeg.readFile(segFile);
-          segmentBlobs.push(new Blob([segData], { type: 'video/mp4' }));
-
-          try { await ffmpeg.deleteFile(segFile); } catch {}
-
-          console.log(`   ✅ Segment ${globalIdx + 1} done (${(segData.length / 1024).toFixed(0)} KB)`);
-        } catch (e) {
-          console.error(`   ❌ Segment ${globalIdx + 1} FAILED:`, e);
-          // Continue with other segments
-        }
-
-        onProgress((globalIdx + 1) / segments.length * 0.7);
       }
-
-      console.log(`   📊 Batch ${batchNum + 1} complete. Blobs collected: ${segmentBlobs.length}`);
     }
 
-    // Clean up all clips
-    console.log('\n🧹 Cleaning up loaded clips...');
-    for (const clipId of loadedClipIds) {
-      try { await ffmpeg.deleteFile(`v${clipId}.mp4`); } catch {}
-    }
-    loadedClipIds.clear();
-
-    if (segmentBlobs.length === 0) {
-      throw new Error('No segments were successfully processed');
-    }
-
+    // STEP 2: Merge all chunks
     console.log('───────────────────────────────────────────────────────');
-    console.log(`🔗 STEP 3: Merging ${segmentBlobs.length} segments`);
-    console.log('───────────────────────────────────────────────────────');
-    onProgress(0.75);
+    console.log('🔗 STEP 2: Merging chunks');
 
-    // Restart FFmpeg with fresh memory for merge phase
-    ffmpeg = await this.restartFFmpeg();
-
-    // Merge all segments
-    const MERGE_CHUNK = 20;
-    let mergedBlob: Blob | null = null;
-
-    for (let i = 0; i < segmentBlobs.length; i += MERGE_CHUNK) {
-      const chunkEnd = Math.min(i + MERGE_CHUNK, segmentBlobs.length);
-      const chunkBlobs = segmentBlobs.slice(i, chunkEnd);
-
-      console.log(`   🔄 Merging chunk: segments ${i + 1}-${chunkEnd}`);
-
-      // Write chunk files
-      const files: string[] = [];
-
-      if (mergedBlob) {
-        const prevData = await fetchFile(mergedBlob);
-        await ffmpeg.writeFile('prev.mp4', prevData);
-        files.push('prev.mp4');
-      }
-
-      for (let j = 0; j < chunkBlobs.length; j++) {
-        const data = await fetchFile(chunkBlobs[j]);
-        const fname = `m${j}.mp4`;
-        await ffmpeg.writeFile(fname, data);
-        files.push(fname);
-      }
-
-      // Create concat list
-      const listContent = files.map(f => `file '${f}'`).join('\n');
-      await ffmpeg.writeFile('list.txt', listContent);
-
-      console.log(`   📝 Concat list: ${files.length} files`);
-
-      await ffmpeg.exec([
-        '-f', 'concat', '-safe', '0', '-i', 'list.txt',
-        '-c', 'copy', '-y', 'merged.mp4'
-      ]);
-
-      const mergedData = await ffmpeg.readFile('merged.mp4');
-      mergedBlob = new Blob([mergedData], { type: 'video/mp4' });
-
-      console.log(`   ✅ Merged chunk done (${(mergedBlob.size / 1024 / 1024).toFixed(2)} MB)`);
-
-      // Cleanup
-      for (const f of files) {
-        try { await ffmpeg.deleteFile(f); } catch {}
-      }
-      try { await ffmpeg.deleteFile('list.txt'); } catch {}
-      try { await ffmpeg.deleteFile('merged.mp4'); } catch {}
-
-      onProgress(0.75 + ((chunkEnd / segmentBlobs.length) * 0.15));
+    // Create concat list
+    let concatList = '';
+    for (const chunk of chunkOutputs) {
+      concatList += `file '${chunk}'\n`;
     }
-
-    if (!mergedBlob) {
-      throw new Error('Failed to merge segments');
-    }
-
-    console.log('───────────────────────────────────────────────────────');
-    console.log('🎵 STEP 4: Adding audio');
-    console.log('───────────────────────────────────────────────────────');
-    onProgress(0.92);
-
-    // Restart FFmpeg with fresh memory for final mux
-    ffmpeg = await this.restartFFmpeg();
-
-    const videoData = await fetchFile(mergedBlob);
-    await ffmpeg.writeFile('video.mp4', videoData);
-    await ffmpeg.writeFile('audio.mp3', audioData);
-
-    console.log('   🔊 Muxing audio and video...');
+    await ffmpeg.writeFile('concat_list.txt', concatList);
+    console.log(`   📝 Concat list: ${chunkOutputs.length} files`);
 
     await ffmpeg.exec([
-      '-i', 'video.mp4',
+      '-f', 'concat',
+      '-safe', '0',
+      '-i', 'concat_list.txt',
+      '-c', 'copy',
+      '-y',
+      'merged.mp4'
+    ]);
+
+    // Clean up chunks
+    await this.cleanup(chunkOutputs);
+    await this.cleanup(['concat_list.txt']);
+    
+    const mergedData = await ffmpeg.readFile('merged.mp4');
+    const mergedSize = (mergedData as Uint8Array).length / 1024 / 1024;
+    console.log(`   ✅ Merged video: ${mergedSize.toFixed(2)} MB`);
+
+    onProgress(0.85);
+
+    // STEP 3: Add audio
+    console.log('───────────────────────────────────────────────────────');
+    console.log('🎵 STEP 3: Adding audio');
+
+    // Restart FFmpeg to clear memory before final step
+    await this.restartFFmpeg();
+
+    // Reload merged video and audio
+    await this.ffmpeg!.writeFile('merged.mp4', mergedData as Uint8Array);
+    console.log(`   📂 Uploading audio: ${audioFile.name} (${(audioFile.size / 1024 / 1024).toFixed(2)} MB)`);
+    await this.ffmpeg!.writeFile('audio.mp3', await fetchFile(audioFile));
+
+    console.log('   🔊 Muxing audio and video...');
+    await this.ffmpeg!.exec([
+      '-i', 'merged.mp4',
       '-i', 'audio.mp3',
       '-c:v', 'copy',
       '-c:a', 'aac',
       '-b:a', '192k',
       '-shortest',
-      '-movflags', '+faststart',
       '-y',
-      'output.mp4'
+      'final.mp4'
     ]);
 
-    onProgress(0.98);
-
+    // Read final output
     console.log('   📖 Reading final output...');
-    const outputData = await ffmpeg.readFile('output.mp4');
-
-    if (!outputData || (outputData as Uint8Array).length < 1000) {
-      throw new Error('Output file is empty or too small');
-    }
-
-    const outputBlob = new Blob([outputData], { type: 'video/mp4' });
+    const finalData = await this.ffmpeg!.readFile('final.mp4');
+    const finalSize = (finalData as Uint8Array).length / 1024 / 1024;
 
     // Cleanup
-    try { await ffmpeg.deleteFile('video.mp4'); } catch {}
-    try { await ffmpeg.deleteFile('audio.mp3'); } catch {}
-    try { await ffmpeg.deleteFile('output.mp4'); } catch {}
+    await this.cleanup(['merged.mp4', 'audio.mp3', 'final.mp4']);
+
+    onProgress(1.0);
 
     console.log('═══════════════════════════════════════════════════════');
-    console.log(`✅ EXPORT COMPLETE: ${(outputBlob.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`✅ EXPORT COMPLETE: ${finalSize.toFixed(2)} MB`);
     console.log('═══════════════════════════════════════════════════════');
 
-    onProgress(1);
-    return outputBlob;
-  }
-
-  terminate() {
-    if (this.ffmpeg) {
-      try {
-        this.ffmpeg.terminate();
-      } catch {}
-      this.ffmpeg = null;
-      this.loaded = false;
-    }
+    return new Blob([finalData], { type: 'video/mp4' });
   }
 }
 
