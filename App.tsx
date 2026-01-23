@@ -5,6 +5,7 @@ import { videoAnalysisService } from './services/videoAnalysis';
 import { renderService } from './services/renderService';
 import { serverExportService } from './services/serverExportService';
 import { shotstackService } from './services/shotstackService';
+import { supabaseStorage } from './services/supabaseStorage';
 import { segmentationService } from './services/segmentationService';
 import { STYLE_PRESETS, getPresetList } from './services/presetService';
 import { sceneDetectionService, SceneMarker } from './services/sceneDetectionService';
@@ -94,6 +95,10 @@ function App() {
   // Shotstack Cloud Export
   const [shotstackApiKey, setShotstackApiKey] = useState(() => localStorage.getItem('shotstack_api_key') || '');
   const [cloudRenderStatus, setCloudRenderStatus] = useState('');
+
+  // Supabase Storage (for cloud export)
+  const [supabaseUrl, setSupabaseUrl] = useState(() => localStorage.getItem('supabase_url') || '');
+  const [supabaseKey, setSupabaseKey] = useState(() => localStorage.getItem('supabase_key') || '');
 
   // Scene Detection State
   const [clipScenes, setClipScenes] = useState<Record<string, SceneMarker[]>>({});
@@ -892,13 +897,23 @@ function App() {
     }
 
     if (!shotstackApiKey) {
-      showToast("Please enter your Shotstack API key first.", 4000);
+      showToast("Enter your Shotstack API key", 4000);
       return;
     }
 
-    // Save API key for future use
+    if (!supabaseUrl || !supabaseKey) {
+      showToast("Enter your Supabase URL and anon key", 4000);
+      return;
+    }
+
+    // Save credentials for future use
     localStorage.setItem('shotstack_api_key', shotstackApiKey);
+    localStorage.setItem('supabase_url', supabaseUrl);
+    localStorage.setItem('supabase_key', supabaseKey);
+
+    // Configure services
     shotstackService.setApiKey(shotstackApiKey);
+    supabaseStorage.configure(supabaseUrl, supabaseKey);
 
     setIsRendering(true);
     setRenderProgress(0);
@@ -1370,8 +1385,22 @@ function App() {
               <div className="space-y-3 border-t border-slate-700 pt-4">
                  <h4 className="text-sm font-semibold text-purple-400 uppercase tracking-wider">Option D: Cloud Render (Recommended)</h4>
                  <p className="text-xs text-slate-400">
-                    Shotstack cloud API. Works anywhere, no local setup needed.
+                    Uploads to Supabase, renders with Shotstack. Works on Vercel.
                  </p>
+                 <input
+                   type="text"
+                   placeholder="Supabase URL (e.g. https://xxx.supabase.co)"
+                   value={supabaseUrl}
+                   onChange={(e) => setSupabaseUrl(e.target.value)}
+                   className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                 />
+                 <input
+                   type="password"
+                   placeholder="Supabase Anon Key"
+                   value={supabaseKey}
+                   onChange={(e) => setSupabaseKey(e.target.value)}
+                   className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                 />
                  <input
                    type="password"
                    placeholder="Shotstack API Key"
@@ -1381,14 +1410,14 @@ function App() {
                  />
                  <button
                    onClick={handleCloudExport}
-                   disabled={!shotstackApiKey}
+                   disabled={!shotstackApiKey || !supabaseUrl || !supabaseKey}
                    className="w-full flex items-center justify-center py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold rounded transition-colors shadow-lg shadow-purple-500/20"
                  >
                    <Cloud className="w-5 h-5 mr-2" />
                    Render .MP4 (Cloud)
                  </button>
                  <p className="text-xs text-slate-500">
-                    Free: 20 min/month at <a href="https://shotstack.io" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">shotstack.io</a>
+                    Requires: Supabase bucket "syncmaster-media" (public)
                  </p>
               </div>
 

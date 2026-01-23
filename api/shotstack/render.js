@@ -21,7 +21,7 @@ export default async function handler(req, res) {
     }
 
     try {
-      const response = await fetch(`https://api.shotstack.io/stage/render/${id}`, {
+      const response = await fetch(`https://api.shotstack.io/edit/stage/render/${id}`, {
         headers: {
           'x-api-key': apiKey,
           'Accept': 'application/json'
@@ -38,7 +38,7 @@ export default async function handler(req, res) {
   // POST - submit new render
   if (req.method === 'POST') {
     try {
-      const response = await fetch('https://api.shotstack.io/stage/render', {
+      const response = await fetch('https://api.shotstack.io/edit/stage/render', {
         method: 'POST',
         headers: {
           'x-api-key': apiKey,
