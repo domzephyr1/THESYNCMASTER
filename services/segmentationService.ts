@@ -147,13 +147,22 @@ export class SegmentationService {
       // --- Calculate Clip Start Time ---
       const clip = videoClips[clipSelection.index];
       const segmentDuration = endTime - beat.time;
-      const clipStartTime = this.calculateClipStartTime(clip, beat, segmentDuration, isHero);
+
+      // Get actual clip boundaries (use duration as fallback for trimEnd)
+      const clipStart = clip.trimStart || 0;
+      const clipEnd = (clip.trimEnd && clip.trimEnd > clipStart) ? clip.trimEnd : (clip.duration || 30);
+      const totalClipDuration = clipEnd - clipStart;
+
+      const clipStartTime = this.calculateClipStartTime(clip, beat, segmentDuration, isHero, clipEnd);
 
       // --- Check if segment exceeds clip duration (prevent looping) ---
-      const clipEndTime = clip.trimEnd || clip.duration || 30; // Default to 30s if unknown
-      const clipAvailableDuration = Math.max(0, clipEndTime - clipStartTime);
-      // Only split if we have valid duration data and segment is longer than available
-      const needsSplit = clipAvailableDuration > 0 && segmentDuration > clipAvailableDuration && clipAvailableDuration > 0.5;
+      const clipAvailableDuration = Math.max(0, clipEnd - clipStartTime);
+      // Split if segment is longer than what's left in the clip
+      const needsSplit = segmentDuration > clipAvailableDuration + 0.1 && clipAvailableDuration > 0.3;
+
+      if (needsSplit) {
+        console.log(`⚠️ Segment ${segments.length}: duration ${segmentDuration.toFixed(2)}s > clip available ${clipAvailableDuration.toFixed(2)}s - SPLITTING`);
+      }
 
       // --- Speed Ramping ---
       let playbackSpeed = 1.0;
@@ -179,6 +188,8 @@ export class SegmentationService {
         let splitCount = 0;
         const maxSplits = 10; // Safety limit to prevent infinite loops
 
+        console.log(`🔀 Splitting segment: ${segmentDuration.toFixed(2)}s into multiple clips`);
+
         while (remainingDuration > 0.2 && splitCount < maxSplits) {
           splitCount++;
           const currentClip = videoClips[currentClipIndex];
@@ -186,9 +197,15 @@ export class SegmentationService {
             console.warn(`Split: clip ${currentClipIndex} not found, breaking`);
             break;
           }
-          const clipEnd = currentClip.trimEnd || currentClip.duration || 30;
-          const availableDuration = Math.max(0.5, clipEnd - currentClipStart);
+          // Use proper clip end calculation
+          const currentClipStartPos = currentClip.trimStart || 0;
+          const currentClipEnd = (currentClip.trimEnd && currentClip.trimEnd > currentClipStartPos)
+            ? currentClip.trimEnd
+            : (currentClip.duration || 30);
+          const availableDuration = Math.max(0.3, currentClipEnd - currentClipStart);
           const thisSegmentDuration = Math.min(remainingDuration, availableDuration);
+
+          console.log(`  Split ${splitCount}: clip ${currentClipIndex + 1}, start ${currentClipStart.toFixed(2)}s, duration ${thisSegmentDuration.toFixed(2)}s`);
 
           const splitSegment: EnhancedSyncSegment = {
             startTime: currentStartTime,
@@ -225,9 +242,12 @@ export class SegmentationService {
               enableSmartReorder
             );
             currentClipIndex = nextClipSelection.index;
-            currentClipStart = videoClips[currentClipIndex]?.trimStart || 0;
+            const nextClip = videoClips[currentClipIndex];
+            currentClipStart = nextClip?.trimStart || 0;
+            console.log(`  Next split will use clip ${currentClipIndex + 1}`);
           }
         }
+        console.log(`✓ Split complete: created ${splitCount} sub-segments`);
       } else {
         // --- Build Single Segment (normal case) ---
         const segment: EnhancedSyncSegment = {
@@ -585,30 +605,32 @@ export class SegmentationService {
     clip: VideoClip,
     beat: BeatMarker,
     segmentDuration: number,
-    isHero: boolean
+    isHero: boolean,
+    clipEnd?: number
   ): number {
-
-    const availableDuration = clip.trimEnd - clip.trimStart;
+    const clipStart = clip.trimStart || 0;
+    const effectiveClipEnd = clipEnd || (clip.trimEnd && clip.trimEnd > clipStart ? clip.trimEnd : (clip.duration || 30));
+    const availableDuration = effectiveClipEnd - clipStart;
 
     // If segment is longer than available clip, start at beginning
     if (segmentDuration >= availableDuration) {
-      return clip.trimStart;
+      return clipStart;
     }
 
     // Hero moments use peak motion timestamp
     if (isHero && clip.metadata?.peakMotionTimestamp) {
       const peakTime = clip.metadata.peakMotionTimestamp;
-      const startTime = Math.max(clip.trimStart, peakTime - segmentDuration / 2);
-      const maxStart = clip.trimEnd - segmentDuration;
-      return Math.max(clip.trimStart, Math.min(startTime, maxStart));
+      const startTime = Math.max(clipStart, peakTime - segmentDuration / 2);
+      const maxStart = effectiveClipEnd - segmentDuration;
+      return Math.max(clipStart, Math.min(startTime, maxStart));
     }
 
-    const maxStart = clip.trimEnd - segmentDuration;
-    const range = maxStart - clip.trimStart;
+    const maxStart = effectiveClipEnd - segmentDuration;
+    const range = maxStart - clipStart;
 
-    if (range <= 0) return clip.trimStart;
+    if (range <= 0) return clipStart;
 
-    return clip.trimStart + Math.random() * range;
+    return clipStart + Math.random() * range;
   }
 
   private calculateSegmentScore(
