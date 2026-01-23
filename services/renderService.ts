@@ -54,12 +54,23 @@ export class RenderService {
     }
 
     // Check if clips have file data
-    const clipsWithFiles = videoClips.filter(c => c.file);
+    const clipsWithFiles = videoClips.filter(c => c.file || c.url);
     console.log(`   Clips with file data: ${clipsWithFiles.length}/${videoClips.length}`);
 
     if (clipsWithFiles.length === 0) {
       throw new Error('Video clips are missing file data. Please re-upload videos.');
     }
+
+    // Validate all segment videoIndices are within bounds
+    const invalidSegments = segments.filter(s => s.videoIndex < 0 || s.videoIndex >= videoClips.length);
+    if (invalidSegments.length > 0) {
+      console.error(`❌ Found ${invalidSegments.length} segments with invalid videoIndex:`, invalidSegments);
+      throw new Error(`Some segments reference invalid clips. Please regenerate sync.`);
+    }
+
+    // Log segment summary for debugging
+    console.log(`   Segment duration range: ${Math.min(...segments.map(s => s.duration)).toFixed(2)}s - ${Math.max(...segments.map(s => s.duration)).toFixed(2)}s`);
+    console.log(`   Total video duration: ${segments.reduce((sum, s) => sum + s.duration, 0).toFixed(2)}s`);
 
     try {
       if (!this.ffmpeg || !this.loaded) {

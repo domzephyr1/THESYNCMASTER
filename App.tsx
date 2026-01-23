@@ -755,17 +755,39 @@ function App() {
 
   // --- FFmpeg Export ---
   const handleFFmpegExport = async () => {
-    if(!audioFile) return;
-    
+    if(!audioFile) {
+      showToast("No audio file loaded");
+      return;
+    }
+    if(!segments || segments.length === 0) {
+      showToast("No segments to export. Generate sync first.");
+      return;
+    }
+    if(!videoFiles || videoFiles.length === 0) {
+      showToast("No video clips loaded");
+      return;
+    }
+
     setIsRendering(true);
     setRenderProgress(0);
     setShowExportModal(false);
 
+    console.log("🎬 Starting export...");
+    console.log(`   Segments: ${segments.length}`);
+    console.log(`   Clips: ${videoFiles.length}`);
+    console.log(`   Audio: ${audioFile.name}`);
+
     try {
-        // Use the exact segments from state (WYSIWYG)
-        const blob = await renderService.exportVideo(audioFile, segments, videoFiles, (p) => {
+        // Add a 5-minute timeout for the entire export
+        const exportPromise = renderService.exportVideo(audioFile, segments, videoFiles, (p) => {
             setRenderProgress(Math.round(p * 100));
         });
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Export timed out after 5 minutes. Try Quick Record instead.')), 300000);
+        });
+
+        const blob = await Promise.race([exportPromise, timeoutPromise]);
 
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -774,21 +796,23 @@ function App() {
         document.body.appendChild(a);
         a.click();
         setIsRendering(false);
-        alert("High Quality Render Complete!");
+        showToast("Export complete! File downloaded.", 4000);
 
     } catch (e) {
-        console.error(e);
+        console.error("Export failed:", e);
         setIsRendering(false);
 
-        // Provide more helpful error message with recovery option
         const errorMessage = e instanceof Error ? e.message : 'Unknown error';
         const isSharedArrayBufferError = errorMessage.includes('SharedArrayBuffer') ||
           errorMessage.includes('COOP') || errorMessage.includes('COEP');
+        const isTimeoutError = errorMessage.includes('timed out');
 
         if (isSharedArrayBufferError) {
-          showToast("FFmpeg requires special browser headers. Use Quick Record instead.", 4000);
+          showToast("FFmpeg needs special headers. Use Quick Record instead.", 4000);
+        } else if (isTimeoutError) {
+          showToast("Export timed out. Try Quick Record for faster results.", 4000);
         } else {
-          showToast(`Render failed: ${errorMessage.slice(0, 50)}...`, 4000);
+          showToast(`Export failed: ${errorMessage.slice(0, 60)}`, 4000);
         }
 
         // Re-open export modal so user can try Quick Record
