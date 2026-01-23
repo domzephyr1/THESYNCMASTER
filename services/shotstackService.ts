@@ -86,7 +86,13 @@ export class ShotstackService {
     }
   }
 
-  // Ingest API has a different base URL
+  // Use our Vercel API routes as proxy to avoid CORS
+  private get proxyUrl() {
+    // Use relative URL so it works on any domain
+    return '/api/shotstack';
+  }
+
+  // Ingest API has a different base URL (for direct calls if needed)
   private get ingestUrl() {
     return this.useStage
       ? 'https://api.shotstack.io/ingest/stage'
@@ -97,13 +103,11 @@ export class ShotstackService {
   async uploadFile(file: File): Promise<string> {
     console.log(`Uploading file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
 
-    // Step 1: Get a signed upload URL from Ingest API
-    // IMPORTANT: No body - just headers
-    const signedRes = await fetch(`${this.ingestUrl}/upload`, {
+    // Step 1: Get a signed upload URL via our API proxy (avoids CORS)
+    const signedRes = await fetch(`${this.proxyUrl}/upload`, {
       method: 'POST',
       headers: {
-        'x-api-key': this.apiKey,
-        'Accept': 'application/json'
+        'x-api-key': this.apiKey
       }
     });
 
@@ -146,10 +150,9 @@ export class ShotstackService {
     const maxAttempts = 60; // 3 minutes max
 
     for (let i = 0; i < maxAttempts; i++) {
-      const res = await fetch(`${this.ingestUrl}/sources/${sourceId}`, {
+      const res = await fetch(`${this.proxyUrl}/source?id=${sourceId}`, {
         headers: {
-          'x-api-key': this.apiKey,
-          'Accept': 'application/json'
+          'x-api-key': this.apiKey
         }
       });
 
@@ -228,7 +231,7 @@ export class ShotstackService {
   async submitRender(edit: ShotstackEdit): Promise<string> {
     console.log('Submitting render to Shotstack:', JSON.stringify(edit, null, 2));
 
-    const res = await fetch(`${this.baseUrl}/render`, {
+    const res = await fetch(`${this.proxyUrl}/render`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
@@ -247,7 +250,7 @@ export class ShotstackService {
   }
 
   async checkRenderStatus(renderId: string): Promise<StatusResponse['response']> {
-    const res = await fetch(`${this.baseUrl}/render/${renderId}`, {
+    const res = await fetch(`${this.proxyUrl}/render?id=${renderId}`, {
       headers: {
         'x-api-key': this.apiKey
       }
