@@ -88,26 +88,69 @@ const Player: React.FC<PlayerProps> = ({
     }
   };
 
-  // Load clip into slot
+  // Safe play with error handling (Critical fix #3)
+  const safePlay = (video: HTMLVideoElement, clipIndex: number) => {
+    if (video.readyState < 3) return; // Not ready
+    video.play().catch((err) => {
+      console.warn(`Playback failed for clip ${clipIndex}:`, err.name);
+      // If AbortError, video was paused before play completed - ignore
+      // If NotAllowedError, autoplay blocked - user needs to interact
+      // If NotSupportedError, codec issue - skip to next segment
+      if (err.name === 'NotSupportedError') {
+        console.error(`Clip ${clipIndex} has unsupported format`);
+      }
+    });
+  };
+
+  // Track pending loads to prevent race conditions
+  const pendingLoadsRef = useRef<Set<number>>(new Set());
+  const loadListenersRef = useRef<Map<number, () => void>>(new Map());
+
+  // Load clip into slot (race-condition safe)
   const loadClipIntoSlot = (slot: number, clipIndex: number, seekTo?: number, drawInitialFrame?: boolean) => {
     const video = videoPoolRefs.current[slot];
     const clip = videoClips[clipIndex];
     if (!video || !clip) return;
 
+    // Skip if this slot is already loading
+    if (pendingLoadsRef.current.has(slot)) return;
+
     if (poolSlots.current[slot].clipIndex !== clipIndex) {
+      // Remove old listener if exists
+      const oldListener = loadListenersRef.current.get(slot);
+      if (oldListener) {
+        video.removeEventListener('canplaythrough', oldListener);
+        loadListenersRef.current.delete(slot);
+      }
+
+      // Mark as loading
+      pendingLoadsRef.current.add(slot);
       poolSlots.current[slot] = { clipIndex, ready: false };
       video.src = clip.url;
 
       const onReady = () => {
-        poolSlots.current[slot].ready = true;
-        if (seekTo !== undefined) video.currentTime = seekTo;
-        // Draw initial frame to canvas if requested
-        if (drawInitialFrame) {
-          // Small delay to ensure frame is decoded after seek
-          setTimeout(() => drawFrameToCanvas(video), 50);
+        // Verify this is still the expected clip (race check)
+        if (poolSlots.current[slot].clipIndex === clipIndex) {
+          poolSlots.current[slot].ready = true;
+          if (seekTo !== undefined) video.currentTime = seekTo;
+          if (drawInitialFrame) {
+            setTimeout(() => drawFrameToCanvas(video), 50);
+          }
         }
+        pendingLoadsRef.current.delete(slot);
         video.removeEventListener('canplaythrough', onReady);
+        loadListenersRef.current.delete(slot);
       };
+
+      // Timeout fallback - mark ready after 3s even if event doesn't fire
+      setTimeout(() => {
+        if (pendingLoadsRef.current.has(slot)) {
+          pendingLoadsRef.current.delete(slot);
+          poolSlots.current[slot].ready = true;
+        }
+      }, 3000);
+
+      loadListenersRef.current.set(slot, onReady);
       video.addEventListener('canplaythrough', onReady);
       video.load();
     } else if (seekTo !== undefined) {
@@ -241,9 +284,8 @@ const Player: React.FC<PlayerProps> = ({
         if (newVideo) {
           newVideo.currentTime = currentSegment.clipStartTime;
           newVideo.playbackRate = currentSegment.playbackSpeed || 1.0;
-          // Guard: only play if HAVE_FUTURE_DATA or better
-          if (isPlaying && newVideo.readyState >= 3) {
-            newVideo.play().catch(() => {});
+          if (isPlaying) {
+            safePlay(newVideo, newClipIndex);
           }
         }
 
@@ -261,9 +303,9 @@ const Player: React.FC<PlayerProps> = ({
           const drift = Math.abs(activeVideo.currentTime - clampedTime);
           if (drift > 0.1) activeVideo.currentTime = clampedTime;
 
-          // Guard: only play if HAVE_FUTURE_DATA or better
-          if (isPlaying && activeVideo.paused && !activeVideo.ended && activeVideo.readyState >= 3) {
-            activeVideo.play().catch(() => {});
+          // Resume if paused
+          if (isPlaying && activeVideo.paused && !activeVideo.ended) {
+            safePlay(activeVideo, activeClipIndex);
           }
         }
       }
@@ -303,11 +345,13 @@ const Player: React.FC<PlayerProps> = ({
     };
 
     if (isPlaying) {
-      playPromiseRef.current = audio.play().catch(() => {});
+      playPromiseRef.current = audio.play().catch((err) => {
+        if (err.name !== 'AbortError') console.warn('Audio play failed:', err.name);
+      });
       const activeVideo = videoPoolRefs.current[activeSlotRef.current];
-      // Guard: only play if HAVE_FUTURE_DATA or better
-      if (activeVideo && activeVideo.readyState >= 3) {
-        activeVideo.play().catch(() => {});
+      const activeIdx = poolSlots.current[activeSlotRef.current]?.clipIndex ?? 0;
+      if (activeVideo) {
+        safePlay(activeVideo, activeIdx);
       }
       requestRef.current = requestAnimationFrame(renderFrame);
     } else {

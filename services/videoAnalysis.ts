@@ -7,8 +7,8 @@ import { getMotionScore } from './motionDetection';
  */
 const workerCode = `
 self.onmessage = function(e) {
-  const { data, prevData, width, height } = e.data;
-  
+  const { id, data, prevData } = e.data;
+
   // 1. Calculate Average Brightness (Standard)
   let brightnessSum = 0;
   for (let i = 0; i < data.length; i += 4) {
@@ -19,7 +19,7 @@ self.onmessage = function(e) {
   // 2. High-Precision Motion Detection (The "77% Cap" Breaker)
   let motionEnergy = 0;
   if (prevData) {
-    const step = 8; 
+    const step = 8;
     const threshold = 25; // Ignore pixel fuzz/grain
     let hits = 0;
 
@@ -35,10 +35,11 @@ self.onmessage = function(e) {
       }
     }
     // Normalize based on actual visual "transients"
-    motionEnergy = (motionEnergy / (data.length / (4 * step))) * 5; 
+    motionEnergy = (motionEnergy / (data.length / (4 * step))) * 5;
   }
 
   self.postMessage({
+    id: id,
     brightness: avgBrightness,
     motion: Math.min(1, motionEnergy),
     processed: true
@@ -49,11 +50,27 @@ self.onmessage = function(e) {
 export class VideoAnalysisService {
   private worker: Worker | null = null;
   private workerBlobUrl: string | null = null;
+  private pendingResolvers: Map<number, (value: any) => void> = new Map();
+  private messageId = 0;
 
   constructor() {
+    this.initWorker();
+  }
+
+  private initWorker() {
     const blob = new Blob([workerCode], { type: 'application/javascript' });
     this.workerBlobUrl = URL.createObjectURL(blob);
     this.worker = new Worker(this.workerBlobUrl);
+
+    // Single listener to handle all messages (prevents listener accumulation)
+    this.worker.onmessage = (e: MessageEvent) => {
+      const { id, ...data } = e.data;
+      const resolver = this.pendingResolvers.get(id);
+      if (resolver) {
+        resolver(data);
+        this.pendingResolvers.delete(id);
+      }
+    };
   }
 
   async analyzeClip(videoUrl: string): Promise<ClipMetadata> {

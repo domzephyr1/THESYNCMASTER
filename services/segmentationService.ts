@@ -195,7 +195,7 @@ export class SegmentationService {
     };
   }
 
-  // PIVOT: Weighted Selection Engine with Strong Variety Enforcement
+  // PIVOT: Weighted Selection Engine - Uses ALL clips in rotation
   private selectClipForSegment(
     beat: BeatMarker,
     clips: VideoClip[],
@@ -205,40 +205,40 @@ export class SegmentationService {
     inDrop: boolean,
     enableSmartReorder: boolean
   ): { index: number } {
-    // Track recent clips for variety (last 3-5 segments)
-    const recentWindow = Math.min(5, Math.floor(clips.length / 2));
-    const recentClips = existingSegments.slice(-recentWindow).map(s => s.videoIndex);
+    // Track ALL used clips in current cycle
+    const usedInCycle = new Set(existingSegments.slice(-clips.length).map(s => s.videoIndex));
     const lastUsedIndex = existingSegments[existingSegments.length - 1]?.videoIndex ?? -1;
 
-    const scored = clips.map((clip, index) => {
+    // Find unused clips first (ensures ALL clips get used before repeating)
+    const unusedClips = clips
+      .map((clip, index) => ({ clip, index }))
+      .filter(({ index }) => !usedInCycle.has(index) && index !== lastUsedIndex);
+
+    // If all clips used, reset cycle (allow all except last used)
+    const candidates = unusedClips.length > 0
+      ? unusedClips
+      : clips.map((clip, index) => ({ clip, index })).filter(({ index }) => index !== lastUsedIndex);
+
+    // Score only the candidates
+    const scored = candidates.map(({ clip, index }) => {
       let score = 50; // Neutral base
 
-      // PIVOT: Motion-to-Beat Locking (The most important factor)
+      // Motion-to-Beat matching
       if (clip.metadata?.motionEnergy) {
         const delta = Math.abs(clip.metadata.motionEnergy - beat.intensity);
-        score += (1 - delta) * 60; // Huge weight on motion matching
+        score += (1 - delta) * 40; // Reduced weight so variety wins
       }
 
-      // HARD BLOCK: Never repeat immediately
-      if (index === lastUsedIndex) score -= 200;
-
-      // SOFT PENALTY: Penalize recently used clips (graduated)
-      const recentIndex = recentClips.indexOf(index);
-      if (recentIndex !== -1) {
-        // More recent = higher penalty (0 = oldest in window, recentWindow-1 = most recent)
-        const recency = (recentIndex + 1) / recentWindow;
-        score -= 50 * recency;
-      }
-
-      if (isHero && heroClipIndices.includes(index)) score += 40;
-      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.5) score += 30;
+      // Hero/Drop bonuses
+      if (isHero && heroClipIndices.includes(index)) score += 30;
+      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.5) score += 20;
 
       // Brightness continuity
-      if (enableSmartReorder && existingSegments.length > 0 && lastUsedIndex >= 0) {
+      if (enableSmartReorder && lastUsedIndex >= 0) {
         const lastClip = clips[lastUsedIndex];
         if (lastClip?.metadata?.brightness && clip.metadata?.brightness) {
           const bDiff = Math.abs(clip.metadata.brightness - lastClip.metadata.brightness);
-          score += (1 - bDiff) * 20;
+          score += (1 - bDiff) * 15;
         }
       }
 
@@ -246,7 +246,7 @@ export class SegmentationService {
     });
 
     scored.sort((a, b) => b.score - a.score);
-    return { index: scored[0].index };
+    return { index: scored[0]?.index ?? 0 };
   }
 
   private calculateBPM(beats: BeatMarker[]): number {
