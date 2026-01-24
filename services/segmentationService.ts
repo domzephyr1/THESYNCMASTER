@@ -99,9 +99,10 @@ export class SegmentationService {
       const syncScore = this.calculateSegmentScore(beat, clip, inDrop, isHero);
       totalScore += syncScore;
 
-      // Calculate segment and clip durations
-      const segmentDuration = endTime - beat.time;
-      const clipAvailable = (clip.trimEnd - clip.trimStart) || 6; // Default 6s if not set
+      // Calculate segment and clip durations (guard against zero-duration)
+      const segmentDuration = Math.max(0.1, endTime - beat.time);
+      const clipDur = clip.trimEnd - clip.trimStart;
+      const clipAvailable = (clipDur > 0.1) ? clipDur : (clip.duration || 6);
 
       // If segment fits in clip, simple case
       if (segmentDuration <= clipAvailable) {
@@ -140,8 +141,10 @@ export class SegmentationService {
           }
 
           const pickClip = videoClips[pickIndex];
-          const pickAvailable = (pickClip.trimEnd - pickClip.trimStart) || 6;
-          const subDuration = Math.min(remaining, pickAvailable);
+          // Guard against zero-duration clips (Critical fix #4)
+          const clipDuration = pickClip.trimEnd - pickClip.trimStart;
+          const pickAvailable = (clipDuration > 0.1) ? clipDuration : (pickClip.duration || 6);
+          const subDuration = Math.min(remaining, Math.max(0.1, pickAvailable));
           const subEnd = segStart + subDuration;
 
           // Stagger start time for fill clips - don't always start at frame 1
