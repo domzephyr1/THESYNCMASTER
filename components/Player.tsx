@@ -206,7 +206,13 @@ const Player: React.FC<PlayerProps> = ({
       }
 
       const currentSegment = findSegmentAtTime(segments, currentTime);
+
+      // FALLBACK: If no segment found, still draw the active video (prevents blank screen)
       if (!currentSegment) {
+        const fallbackVideo = videoPoolRefs.current[activeSlotRef.current];
+        if (displayCtx && fallbackVideo && fallbackVideo.readyState >= 2) {
+          displayCtx.drawImage(fallbackVideo, 0, 0, displayCanvas.width, displayCanvas.height);
+        }
         if (!audio.paused) requestRef.current = requestAnimationFrame(renderFrame);
         return;
       }

@@ -27,7 +27,7 @@ export class SegmentationService {
 
     // --- INTRO SEGMENT: Show video before first beat ---
     const firstBeatTime = beats[0]?.time || 0;
-    if (firstBeatTime > 0.2) {
+    if (firstBeatTime > 0.05) {
       // Pick lowest motion clip for calm intro
       const introIdx = this.selectCalmClip(videoClips);
       const introClip = videoClips[introIdx];
