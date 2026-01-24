@@ -122,12 +122,27 @@ export class SegmentationService {
           const subDuration = Math.min(remaining, pickAvailable);
           const subEnd = segStart + subDuration;
 
+          // Stagger start time for fill clips - don't always start at frame 1
+          let subClipStart = pickClip.trimStart;
+          if (!isFirst && subDuration < pickAvailable) {
+            // Random offset within safe range, or use peak motion if available
+            const maxOffset = pickAvailable - subDuration;
+            if (pickClip.metadata?.peakMotionTimestamp) {
+              // Center around peak motion
+              const peakOffset = pickClip.metadata.peakMotionTimestamp - pickClip.trimStart - (subDuration / 2);
+              subClipStart = pickClip.trimStart + Math.max(0, Math.min(maxOffset, peakOffset));
+            } else {
+              // Random stagger for variety
+              subClipStart = pickClip.trimStart + (Math.random() * maxOffset);
+            }
+          }
+
           segments.push({
             startTime: segStart,
             endTime: subEnd,
             duration: subDuration,
             videoIndex: pickIndex,
-            clipStartTime: pickClip.trimStart,
+            clipStartTime: subClipStart,
             transition: isFirst ? transition : TransitionType.CUT,
             prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
             filter: 'none',
