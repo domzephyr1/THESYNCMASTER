@@ -2,26 +2,19 @@ import React, { useEffect, useRef, useState } from 'react';
 import { BeatMarker, EnhancedSyncSegment, VideoClip, TransitionType } from '../types';
 import { Play, Pause, SkipBack, Loader2, Disc } from 'lucide-react';
 
-// Binary search for finding segment at a given time - O(log n) instead of O(n)
+// Binary search for finding segment at a given time - O(log n)
 function findSegmentAtTime(segments: EnhancedSyncSegment[], time: number): EnhancedSyncSegment | null {
   if (segments.length === 0) return null;
-
   let left = 0;
   let right = segments.length - 1;
 
   while (left <= right) {
     const mid = Math.floor((left + right) / 2);
     const seg = segments[mid];
-
-    if (time >= seg.startTime && time < seg.endTime) {
-      return seg;
-    } else if (time < seg.startTime) {
-      right = mid - 1;
-    } else {
-      left = mid + 1;
-    }
+    if (time >= seg.startTime && time < seg.endTime) return seg;
+    else if (time < seg.startTime) right = mid - 1;
+    else left = mid + 1;
   }
-
   return null;
 }
 
@@ -35,15 +28,23 @@ interface PlayerProps {
   onTimeUpdate: (time: number) => void;
   isPlaying: boolean;
   onPlayToggle: (playing: boolean) => void;
-  seekTime: number | null; // Signal to seek
+  seekTime: number | null;
   isRecording?: boolean;
   onRecordingComplete?: (blob: Blob) => void;
 }
 
-const Player: React.FC<PlayerProps> = ({ 
-  audioUrl, 
-  videoClips, 
-  beats, 
+// Video pool slot tracking
+interface PoolSlot {
+  clipIndex: number;
+  ready: boolean;
+}
+
+const POOL_SIZE = 3; // Only 3 video elements instead of 50+
+
+const Player: React.FC<PlayerProps> = ({
+  audioUrl,
+  videoClips,
+  beats,
   duration,
   segments,
   bpm,
@@ -57,46 +58,75 @@ const Player: React.FC<PlayerProps> = ({
   const audioRef = useRef<HTMLAudioElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<number | null>(null);
-  
+
+  // VIDEO POOL: Only 3 video elements
+  const videoPoolRefs = useRef<(HTMLVideoElement | null)[]>([null, null, null]);
+  const poolSlots = useRef<PoolSlot[]>([
+    { clipIndex: -1, ready: false },
+    { clipIndex: -1, ready: false },
+    { clipIndex: -1, ready: false }
+  ]);
+  const activeSlotRef = useRef<number>(0);
+  const prevSlotRef = useRef<number>(-1);
+
   // Recording Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  
-  // Visual FX Refs
-  const fxState = useRef({
-    flash: 0,
-    zoom: 1.0, 
-    filter: 'none',
-    glitch: 0
-  });
-  
-  const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
-  // Use refs for animation state to avoid re-renders during playback
-  const activeClipRef = useRef<number>(0);
-  const prevClipRef = useRef<number>(-1);
-  const [displayClipIndex, setDisplayClipIndex] = useState<number>(0); // For UI only
+
+  // Visual FX
+  const fxState = useRef({ flash: 0, zoom: 1.0, filter: 'none', glitch: 0 });
+
+  const [displayClipIndex, setDisplayClipIndex] = useState<number>(0);
   const [isReady, setIsReady] = useState(false);
+  const playPromiseRef = useRef<Promise<void> | null>(null);
 
-  // Predictive double-buffering state
-  const nextSegmentIndexRef = useRef<number>(-1);
-  const preloadedClipIndexRef = useRef<number>(-1);
-  const preloadingRef = useRef<boolean>(false);
+  // Find an available pool slot (not currently active or previous)
+  const findAvailableSlot = (excludeSlots: number[]): number => {
+    for (let i = 0; i < POOL_SIZE; i++) {
+      if (!excludeSlots.includes(i)) return i;
+    }
+    return 0; // Fallback
+  };
 
-  // Initialize
+  // Load a clip into a specific pool slot
+  const loadClipIntoSlot = (slotIndex: number, clipIndex: number, seekTo?: number) => {
+    const video = videoPoolRefs.current[slotIndex];
+    const clip = videoClips[clipIndex];
+    if (!video || !clip) return;
+
+    // Only reload if different clip
+    if (poolSlots.current[slotIndex].clipIndex !== clipIndex) {
+      video.src = clip.url;
+      poolSlots.current[slotIndex] = { clipIndex, ready: false };
+
+      const onReady = () => {
+        poolSlots.current[slotIndex].ready = true;
+        if (seekTo !== undefined) video.currentTime = seekTo;
+        video.removeEventListener('loadeddata', onReady);
+      };
+      video.addEventListener('loadeddata', onReady);
+      video.load();
+    } else if (seekTo !== undefined) {
+      video.currentTime = seekTo;
+    }
+  };
+
+  // Initialize first segment
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
-        // Initialize to first segment's clip
-        activeClipRef.current = segments[0].videoIndex;
-        prevClipRef.current = -1;
-        setIsReady(true);
+      const firstClipIndex = segments[0].videoIndex;
+      loadClipIntoSlot(0, firstClipIndex, segments[0].clipStartTime);
+      activeSlotRef.current = 0;
+      setDisplayClipIndex(firstClipIndex);
+      setIsReady(true);
     }
   }, [segments, videoClips]);
 
-  // Cleanup video elements on unmount to prevent memory leaks
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      videoRefs.current.forEach(video => {
+      videoPoolRefs.current.forEach(video => {
         if (video) {
           video.pause();
           video.src = '';
@@ -106,22 +136,22 @@ const Player: React.FC<PlayerProps> = ({
     };
   }, []);
 
-  // 2. Recording Logic
+  // Recording Logic
   useEffect(() => {
     if (isRecording) {
       chunksRef.current = [];
       const canvas = canvasRef.current;
       const audio = audioRef.current;
-      
+
       if (canvas && audio) {
         const canvasStream = canvas.captureStream(30);
         let audioStream: MediaStream | null = null;
         if ((audio as any).captureStream) audioStream = (audio as any).captureStream();
         else if ((audio as any).mozCaptureStream) audioStream = (audio as any).mozCaptureStream();
-        
+
         const tracks = [...canvasStream.getVideoTracks(), ...(audioStream ? audioStream.getAudioTracks() : [])];
         const combinedStream = new MediaStream(tracks);
-        
+
         try {
           const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp9,opus' });
           recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
@@ -133,7 +163,6 @@ const Player: React.FC<PlayerProps> = ({
           recorderRef.current = recorder;
         } catch (e) {
           console.error("MediaRecorder failed", e);
-          alert("Recording failed. Browser may not support this format.");
         }
       }
     } else {
@@ -143,10 +172,7 @@ const Player: React.FC<PlayerProps> = ({
     }
   }, [isRecording]);
 
-  // Track play promise to prevent race conditions
-  const playPromiseRef = useRef<Promise<void> | null>(null);
-
-  // 3. Playback Loop (Visual Engine)
+  // Main Playback Loop
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -157,330 +183,179 @@ const Player: React.FC<PlayerProps> = ({
       onTimeUpdate(currentTime);
 
       // FX Decay
-      if (fxState.current.flash > 0) fxState.current.flash *= 0.85; 
+      if (fxState.current.flash > 0) fxState.current.flash *= 0.85;
       if (fxState.current.glitch > 0) fxState.current.glitch -= 1;
-      
-      // Zoom return to 1.0 (slow ease out)
       if (fxState.current.zoom > 1.0) fxState.current.zoom = 1.0 + (fxState.current.zoom - 1.0) * 0.95;
       if (fxState.current.zoom < 1.001) fxState.current.zoom = 1.0;
 
       if (segments.length > 0) {
-        // Use binary search for O(log n) lookup instead of O(n) .find()
         const currentSegment = findSegmentAtTime(segments, currentTime);
 
         if (currentSegment) {
           const timeInSegment = currentTime - currentSegment.startTime;
-          const activeClipIndex = activeClipRef.current;
-          const prevClipIndex = prevClipRef.current;
+          const activeSlot = activeSlotRef.current;
+          const activeClipIndex = poolSlots.current[activeSlot].clipIndex;
+          const activeVideo = videoPoolRefs.current[activeSlot];
 
-          // --- CUT EVENT ---
+          // --- CUT EVENT: Need different clip ---
           if (currentSegment.videoIndex !== activeClipIndex) {
             const newClipIndex = currentSegment.videoIndex;
 
-            // Update refs (no re-render)
-            prevClipRef.current = activeClipIndex;
-            activeClipRef.current = newClipIndex;
-
-            // Hide previous video immediately
-            const prevVideo = videoRefs.current[activeClipIndex];
-            if (prevVideo) {
-              prevVideo.style.opacity = '0';
-              prevVideo.style.zIndex = '0';
-              prevVideo.pause();
+            // Find slot with this clip already loaded, or get available slot
+            let newSlot = poolSlots.current.findIndex(s => s.clipIndex === newClipIndex);
+            if (newSlot === -1) {
+              newSlot = findAvailableSlot([activeSlot, prevSlotRef.current]);
+              loadClipIntoSlot(newSlot, newClipIndex, currentSegment.clipStartTime);
             }
 
-            // Show and play new video
-            const videoEl = videoRefs.current[newClipIndex];
-            if (videoEl) {
-              // Check if this clip was preloaded
-              const wasPreloaded = preloadedClipIndexRef.current === newClipIndex;
-
-              // Seek to correct position - start at clipStartTime (timeInSegment should be ~0 at cut)
-              if (!wasPreloaded) {
-                videoEl.currentTime = currentSegment.clipStartTime;
-              }
-
-              videoEl.style.opacity = '1';
-              videoEl.style.zIndex = '10';
-              videoEl.style.transform = 'scale(1)';
-              videoEl.style.filter = '';
-              // Apply speed ramping if present
-              videoEl.playbackRate = currentSegment.playbackSpeed || 1.0;
-
-              // Only play if buffer is ready (prevents freeze frames)
-              if (isPlaying) {
-                if (videoEl.readyState >= 3 || wasPreloaded) {
-                  // HAVE_FUTURE_DATA or preloaded = ready to play
-                  videoEl.play().catch(() => {});
-                } else {
-                  // Wait for buffer
-                  const onCanPlay = () => {
-                    videoEl.play().catch(() => {});
-                    videoEl.removeEventListener('canplay', onCanPlay);
-                  };
-                  videoEl.addEventListener('canplay', onCanPlay, { once: true });
-                }
-              }
-
-              // Reset preload state for this clip
-              if (wasPreloaded) {
-                preloadedClipIndexRef.current = -1;
-              }
+            // Hide previous
+            if (activeVideo) {
+              activeVideo.style.opacity = '0';
+              activeVideo.style.zIndex = '0';
+              activeVideo.pause();
             }
 
-            // Update UI state less frequently (every cut is fine)
+            // Show new
+            const newVideo = videoPoolRefs.current[newSlot];
+            if (newVideo) {
+              newVideo.currentTime = currentSegment.clipStartTime;
+              newVideo.style.opacity = '1';
+              newVideo.style.zIndex = '10';
+              newVideo.playbackRate = currentSegment.playbackSpeed || 1.0;
+              if (isPlaying) newVideo.play().catch(() => {});
+            }
+
+            prevSlotRef.current = activeSlot;
+            activeSlotRef.current = newSlot;
             setDisplayClipIndex(newClipIndex);
 
           } else {
-             // --- DURING SEGMENT RENDER ---
-             const activeVideo = videoRefs.current[activeClipIndex];
-             const prevVideo = videoRefs.current[prevClipIndex];
-             
-             // 1. Sync Active Video
-             const clipData = videoClips[activeClipIndex];
-             if (activeVideo && clipData) {
-                 const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
-                 const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
+            // --- DURING SEGMENT: Sync video ---
+            const clip = videoClips[activeClipIndex];
+            if (activeVideo && clip) {
+              const targetTime = currentSegment.clipStartTime + timeInSegment;
+              let clampedTime = Math.min(targetTime, clip.trimEnd - 0.01);
 
-                 // Clamp to clip bounds (no looping - segments should be split to use different clips)
-                 let clampedTime = targetVideoTime;
-                 if (targetVideoTime >= clipData.trimEnd) {
-                    // Hold on last frame if we somehow exceed clip duration
-                    clampedTime = clipData.trimEnd - 0.01;
-                 }
+              const drift = Math.abs(activeVideo.currentTime - clampedTime);
+              if (drift > 0.15) activeVideo.currentTime = clampedTime;
 
-                 // Standard Sync - use clamped time
-                 if (drift > 0.15) activeVideo.currentTime = clampedTime;
+              const videoEnded = activeVideo.ended || activeVideo.currentTime >= activeVideo.duration - 0.1;
+              if (isPlaying && activeVideo.paused && !videoEnded) activeVideo.play().catch(() => {});
 
-                 // Ensure video is playing - but NOT if it has ended (would cause loop)
-                 // Check if video has ended by comparing currentTime to duration
-                 const videoEnded = activeVideo.ended || (activeVideo.duration > 0 && activeVideo.currentTime >= activeVideo.duration - 0.1);
-                 if (isPlaying && activeVideo.paused && !videoEnded) activeVideo.play().catch(()=>{});
+              // Apply transforms
+              let scale = fxState.current.zoom;
+              let translateX = fxState.current.glitch > 0 ? (Math.random() - 0.5) * 20 : 0;
+              activeVideo.style.transform = `scale(${scale}) translate3d(${translateX}px, 0, 0)`;
 
-                 // Apply Transforms
-                 let scale = fxState.current.zoom;
-                 let translateX = 0;
-                 let opacity = 1;
-                 // Minimal safety change: disable all auto-applied preview filters (B/W, warm, etc.)
-                 // Export is handled elsewhere; this only affects in-browser preview rendering.
-                 let currentFilter: EnhancedSyncSegment['filter'] = 'none';
+              // Crossfade with previous
+              if (currentSegment.transition === TransitionType.CROSSFADE && timeInSegment < 0.5) {
+                const prevVideo = videoPoolRefs.current[prevSlotRef.current];
+                if (prevVideo && prevSlotRef.current !== -1) {
+                  const opacity = timeInSegment / 0.5;
+                  activeVideo.style.opacity = opacity.toString();
+                  prevVideo.style.opacity = (1 - opacity).toString();
+                  prevVideo.style.zIndex = '5';
+                  if (prevVideo.paused && isPlaying) prevVideo.play().catch(() => {});
+                }
+              }
+            }
 
-                 // Glitch Effect
-                 if (fxState.current.glitch > 0) {
-                     translateX = (Math.random() - 0.5) * 20;
-                     scale = 1.05 + Math.random() * 0.05;
-                     // Keep filter disabled even during glitch effect
-                 }
+            // --- PREDICTIVE PRELOAD: Load next clip ---
+            const segIdx = segments.findIndex(s => currentTime >= s.startTime && currentTime < s.endTime);
+            if (segIdx >= 0 && segIdx < segments.length - 1) {
+              const nextSeg = segments[segIdx + 1];
+              const timeUntilCut = nextSeg.startTime - currentTime;
 
-                 // Crossfade Logic
-                 if (currentSegment.transition === TransitionType.CROSSFADE) {
-                     const fadeDuration = 0.5; 
-                     if (timeInSegment < fadeDuration) {
-                         opacity = timeInSegment / fadeDuration; // 0 -> 1
-                         
-                         // Keep Previous Video Playing & Fading Out
-                         if (prevVideo && prevClipIndex !== -1) {
-                             prevVideo.style.opacity = (1 - opacity).toString();
-                             prevVideo.style.zIndex = '5';
-                             if (prevVideo.paused && isPlaying) prevVideo.play().catch(()=>{});
-                         }
-                     } else {
-                         if (prevVideo) {
-                             prevVideo.style.opacity = '0';
-                             prevVideo.pause();
-                         }
-                     }
-                 } else {
-                     if (prevVideo && prevClipIndex !== -1 && prevClipIndex !== activeClipIndex) {
-                        prevVideo.style.opacity = '0';
-                        prevVideo.pause();
-                     }
-                 }
+              if (timeUntilCut < 0.8 && timeUntilCut > 0) {
+                const nextClipIndex = nextSeg.videoIndex;
+                const alreadyLoaded = poolSlots.current.some(s => s.clipIndex === nextClipIndex);
 
-                 // Apply CSS - use translate3d for GPU acceleration
-                 activeVideo.style.transform = `scale(${scale}) translate3d(${translateX}px, 0, 0)`;
-                 activeVideo.style.opacity = opacity.toString();
-                 activeVideo.style.zIndex = '10';
-                 
-                 let cssFilter = '';
-                 if (currentFilter === 'bw') cssFilter = 'grayscale(100%)';
-                 else if (currentFilter === 'contrast') cssFilter = 'contrast(130%) brightness(110%)';
-                 else if (currentFilter === 'cyber') cssFilter = 'hue-rotate(180deg) saturate(120%)';
-                 
-                 if (fxState.current.glitch > 0) cssFilter += ` blur(${Math.random()*2}px)`;
-                 
-                 activeVideo.style.filter = cssFilter;
-             }
-
-             // --- PREDICTIVE PRELOADING (Look-ahead) ---
-             // Find next segment
-             const currentSegmentIndex = segments.findIndex(seg =>
-               currentTime >= seg.startTime && currentTime < seg.endTime
-             );
-
-             if (currentSegmentIndex >= 0 && currentSegmentIndex < segments.length - 1) {
-               const nextSegment = segments[currentSegmentIndex + 1];
-               const timeUntilNextCut = nextSegment.startTime - currentTime;
-
-               // Start preloading 500ms before cut
-               if (timeUntilNextCut < 0.5 && timeUntilNextCut > 0) {
-                 const nextClipIndex = nextSegment.videoIndex;
-
-                 // Only preload if not already preloaded and not currently preloading
-                 if (nextClipIndex !== preloadedClipIndexRef.current &&
-                     nextClipIndex !== activeClipIndex &&
-                     !preloadingRef.current) {
-
-                   preloadingRef.current = true;
-                   const nextVideo = videoRefs.current[nextClipIndex];
-
-                   if (nextVideo) {
-                     // Seek to the start position for next segment
-                     const targetTime = nextSegment.clipStartTime;
-
-                     // Check if we need to seek
-                     if (Math.abs(nextVideo.currentTime - targetTime) > 0.1) {
-                       nextVideo.currentTime = targetTime;
-
-                       // Wait for buffer to be ready
-                       const onSeeked = () => {
-                         preloadedClipIndexRef.current = nextClipIndex;
-                         nextSegmentIndexRef.current = currentSegmentIndex + 1;
-                         preloadingRef.current = false;
-                         nextVideo.removeEventListener('seeked', onSeeked);
-                         nextVideo.removeEventListener('canplay', onSeeked);
-                       };
-
-                       nextVideo.addEventListener('seeked', onSeeked, { once: true });
-                       nextVideo.addEventListener('canplay', onSeeked, { once: true });
-
-                       // Timeout fallback in case events don't fire
-                       setTimeout(() => {
-                         if (preloadingRef.current) {
-                           preloadedClipIndexRef.current = nextClipIndex;
-                           preloadingRef.current = false;
-                         }
-                       }, 300);
-                     } else {
-                       // Already at correct position
-                       preloadedClipIndexRef.current = nextClipIndex;
-                       preloadingRef.current = false;
-                     }
-                   }
-                 }
-               }
-             }
+                if (!alreadyLoaded && nextClipIndex !== activeClipIndex) {
+                  const preloadSlot = findAvailableSlot([activeSlot, prevSlotRef.current]);
+                  loadClipIntoSlot(preloadSlot, nextClipIndex, nextSeg.clipStartTime);
+                }
+              }
+            }
           }
         }
       }
 
-      // --- CANVAS RENDER ---
-      const activeVideo = videoRefs.current[activeClipRef.current];
+      // Canvas render for recording
+      const activeVideo = videoPoolRefs.current[activeSlotRef.current];
       const canvas = canvasRef.current;
-      if (canvas && activeVideo) {
+      if (canvas && activeVideo && activeVideo.readyState >= 2) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
-           const w = canvas.width || 1280;
-           const h = canvas.height || 720;
-           if (canvas.width !== activeVideo.videoWidth && activeVideo.videoWidth > 0) {
-              canvas.width = activeVideo.videoWidth;
-              canvas.height = activeVideo.videoHeight;
-           }
-           ctx.drawImage(activeVideo, 0, 0, w, h);
-           // Simple draw for recorder
-           if (prevClipRef.current !== -1 && prevClipRef.current !== activeClipRef.current) {
-               const prevVideo = videoRefs.current[prevClipRef.current];
-               const currentSeg = findSegmentAtTime(segments, currentTime);
-               if (prevVideo && currentSeg?.transition === TransitionType.CROSSFADE) {
-                    const time = currentTime - currentSeg.startTime;
-                    if (time < 0.5) {
-                        ctx.globalAlpha = 1 - (time/0.5);
-                        ctx.drawImage(prevVideo, 0, 0, w, h);
-                        ctx.globalAlpha = 1.0;
-                    }
-               }
-           }
+          if (canvas.width !== 1280) { canvas.width = 1280; canvas.height = 720; }
+          ctx.drawImage(activeVideo, 0, 0, canvas.width, canvas.height);
         }
       }
 
-      // --- DOM FX ---
+      // Flash overlay
       const flashOverlay = containerRef.current?.querySelector('.flash-overlay') as HTMLElement;
       if (flashOverlay) flashOverlay.style.opacity = fxState.current.flash.toString();
 
-      if (!audio.paused) {
-        requestRef.current = requestAnimationFrame(animate);
-      }
+      if (!audio.paused) requestRef.current = requestAnimationFrame(animate);
     };
 
     if (isPlaying) {
-      playPromiseRef.current = audio.play().catch(e => console.error("Audio play failed", e));
-      const currentVideo = videoRefs.current[activeClipRef.current];
-      if (currentVideo) {
-        currentVideo.style.opacity = '1';
-        currentVideo.play().catch(() => {});
+      playPromiseRef.current = audio.play().catch(() => {});
+      const activeVideo = videoPoolRefs.current[activeSlotRef.current];
+      if (activeVideo) {
+        activeVideo.style.opacity = '1';
+        activeVideo.play().catch(() => {});
       }
       requestRef.current = requestAnimationFrame(animate);
     } else {
-      // Wait for any pending play promise before pausing
       if (playPromiseRef.current) {
-        playPromiseRef.current.then(() => {
-          audio.pause();
-        }).catch(() => {
-          // Play was already interrupted, safe to pause
-          audio.pause();
-        });
+        playPromiseRef.current.then(() => audio.pause()).catch(() => audio.pause());
         playPromiseRef.current = null;
       } else {
         audio.pause();
       }
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      videoRefs.current.forEach(v => v && v.pause());
+      videoPoolRefs.current.forEach(v => v?.pause());
     }
 
-    return () => {
-        if (requestRef.current) cancelAnimationFrame(requestRef.current);
-    };
-  }, [isPlaying, segments, videoClips]); 
+    return () => { if (requestRef.current) cancelAnimationFrame(requestRef.current); };
+  }, [isPlaying, segments, videoClips]);
 
-  // 4. Handle External Seek
+  // Handle External Seek
   useEffect(() => {
     if (seekTime !== null && audioRef.current) {
       audioRef.current.currentTime = seekTime;
       onTimeUpdate(seekTime);
 
-      // Use binary search for segment lookup
-      const targetSegment = findSegmentAtTime(segments, seekTime);
-      if (targetSegment) {
-         // Hide current video
-         const currentVideo = videoRefs.current[activeClipRef.current];
-         if (currentVideo) {
-           currentVideo.style.opacity = '0';
-           currentVideo.pause();
-         }
+      const targetSeg = findSegmentAtTime(segments, seekTime);
+      if (targetSeg) {
+        const newClipIndex = targetSeg.videoIndex;
+        const timeInSeg = seekTime - targetSeg.startTime;
+        const targetTime = Math.min(targetSeg.clipStartTime + timeInSeg, videoClips[newClipIndex]?.trimEnd - 0.01 || 999);
 
-         // Update refs
-         activeClipRef.current = targetSegment.videoIndex;
-         prevClipRef.current = -1;
-         setDisplayClipIndex(targetSegment.videoIndex);
+        // Hide current
+        const currentVideo = videoPoolRefs.current[activeSlotRef.current];
+        if (currentVideo) {
+          currentVideo.style.opacity = '0';
+          currentVideo.pause();
+        }
 
-         fxState.current.flash = 0;
-         fxState.current.zoom = 1;
-         fxState.current.glitch = 0;
+        // Find or load target clip
+        let targetSlot = poolSlots.current.findIndex(s => s.clipIndex === newClipIndex);
+        if (targetSlot === -1) {
+          targetSlot = findAvailableSlot([]);
+          loadClipIntoSlot(targetSlot, newClipIndex, targetTime);
+        }
 
-         const videoEl = videoRefs.current[targetSegment.videoIndex];
-         const clipData = videoClips[targetSegment.videoIndex];
+        const targetVideo = videoPoolRefs.current[targetSlot];
+        if (targetVideo) {
+          targetVideo.currentTime = targetTime;
+          targetVideo.style.opacity = '1';
+          targetVideo.style.zIndex = '10';
+        }
 
-         if(videoEl && clipData) {
-             const timeInSegment = seekTime - targetSegment.startTime;
-             let targetTime = targetSegment.clipStartTime + timeInSegment;
-             // Clamp to clip bounds (no looping)
-             if (targetTime > clipData.trimEnd) {
-                 targetTime = clipData.trimEnd - 0.01;
-             }
-             videoEl.currentTime = targetTime;
-             videoEl.style.opacity = '1';
-             videoEl.style.zIndex = '10';
-         }
+        activeSlotRef.current = targetSlot;
+        prevSlotRef.current = -1;
+        setDisplayClipIndex(newClipIndex);
       }
     }
   }, [seekTime, segments, videoClips]);
@@ -496,22 +371,21 @@ const Player: React.FC<PlayerProps> = ({
 
   return (
     <div className="flex flex-col space-y-4" ref={containerRef}>
-      {/* Viewport */}
       <div className="relative w-full aspect-video bg-black rounded-lg overflow-hidden border border-slate-700 shadow-2xl">
         <audio ref={audioRef} src={audioUrl} onEnded={() => onPlayToggle(false)} crossOrigin="anonymous" />
         <canvas ref={canvasRef} className="hidden" />
 
-        {videoClips.map((clip, idx) => (
+        {/* VIDEO POOL: Only 3 elements instead of 50+ */}
+        {[0, 1, 2].map((slotIdx) => (
           <video
-            key={clip.id}
-            ref={(el) => { videoRefs.current[idx] = el; }}
-            src={clip.url}
+            key={`pool-${slotIdx}`}
+            ref={(el) => { videoPoolRefs.current[slotIdx] = el; }}
             className="absolute top-0 left-0 w-full h-full object-contain"
             style={{
-                opacity: (segments.length > 0 && idx === segments[0].videoIndex) ? 1 : 0,
-                zIndex: (segments.length > 0 && idx === segments[0].videoIndex) ? 10 : 0,
-                transition: 'none', // No CSS transitions - we control via JS
-                willChange: 'transform, opacity, filter' // Hint to browser for GPU acceleration
+              opacity: slotIdx === 0 ? 1 : 0,
+              zIndex: slotIdx === 0 ? 10 : 0,
+              transition: 'none',
+              willChange: 'transform, opacity'
             }}
             muted
             playsInline
@@ -530,7 +404,7 @@ const Player: React.FC<PlayerProps> = ({
         )}
 
         {!isRecording && (
-          <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-sm z-30 group cursor-pointer" onClick={() => onPlayToggle(!isPlaying)}>
+          <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-sm z-30 cursor-pointer" onClick={() => onPlayToggle(!isPlaying)}>
             <button className="p-4 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500 hover:bg-cyan-500 hover:text-black transition-all transform hover:scale-110 shadow-[0_0_20px_rgba(6,182,212,0.4)]">
               {isPlaying ? <Pause className="w-8 h-8 fill-current" /> : <Play className="w-8 h-8 fill-current" />}
             </button>
@@ -538,27 +412,27 @@ const Player: React.FC<PlayerProps> = ({
         )}
       </div>
 
-      {/* Control Bar */}
       <div className="flex items-center justify-between px-4 py-3 bg-slate-900 rounded-lg border border-slate-800">
         <div className="flex items-center space-x-4">
-           <button 
-             onClick={() => {
-                if(audioRef.current) audioRef.current.currentTime = 0;
-                onPlayToggle(false);
-                onTimeUpdate(0);
-             }}
-             disabled={isRecording}
-             className="text-slate-400 hover:text-white transition-colors disabled:opacity-50"
-           >
-             <SkipBack className="w-5 h-5" />
-           </button>
-           <div className="font-mono text-sm text-cyan-400">
-             <span className="text-slate-100">{segments.length}</span> CINEMATIC CUTS
-             {bpm > 0 && <span className="ml-2 text-xs text-slate-500">({bpm} BPM)</span>}
-           </div>
+          <button
+            onClick={() => {
+              if(audioRef.current) audioRef.current.currentTime = 0;
+              onPlayToggle(false);
+              onTimeUpdate(0);
+            }}
+            disabled={isRecording}
+            className="text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+          >
+            <SkipBack className="w-5 h-5" />
+          </button>
+          <div className="font-mono text-sm text-cyan-400">
+            <span className="text-slate-100">{segments.length}</span> CUTS
+            {bpm > 0 && <span className="ml-2 text-xs text-slate-500">({bpm} BPM)</span>}
+          </div>
         </div>
         <div className="flex items-center space-x-4 text-xs font-mono text-slate-500">
-             <span className="bg-slate-800 px-2 py-0.5 rounded text-slate-300">CLIP {displayClipIndex + 1}</span>
+          <span className="bg-slate-800 px-2 py-0.5 rounded text-slate-300">CLIP {displayClipIndex + 1}</span>
+          <span className="text-green-400">3-POOL</span>
         </div>
       </div>
     </div>
