@@ -242,21 +242,20 @@ const Player: React.FC<PlayerProps> = ({
                  const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
                  const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
 
-                 // Handle Looping if segment is longer than clip source
-                 const sourceDuration = clipData.trimEnd - clipData.trimStart;
-                 let loopAdjustedTime = targetVideoTime;
+                 // Clamp to clip bounds (no looping - segments should be split to use different clips)
+                 let clampedTime = targetVideoTime;
                  if (targetVideoTime >= clipData.trimEnd) {
-                    loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
-                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.2) {
-                        activeVideo.currentTime = loopAdjustedTime;
-                    }
-                 } else {
-                    // Standard Sync - much tighter threshold for smoothness
-                    if (drift > 0.15) activeVideo.currentTime = targetVideoTime;
+                    // Hold on last frame if we somehow exceed clip duration
+                    clampedTime = clipData.trimEnd - 0.01;
                  }
 
-                 // Ensure video is playing
-                 if (isPlaying && activeVideo.paused) activeVideo.play().catch(()=>{});
+                 // Standard Sync - use clamped time
+                 if (drift > 0.15) activeVideo.currentTime = clampedTime;
+
+                 // Ensure video is playing - but NOT if it has ended (would cause loop)
+                 // Check if video has ended by comparing currentTime to duration
+                 const videoEnded = activeVideo.ended || (activeVideo.duration > 0 && activeVideo.currentTime >= activeVideo.duration - 0.1);
+                 if (isPlaying && activeVideo.paused && !videoEnded) activeVideo.play().catch(()=>{});
 
                  // Apply Transforms
                  let scale = fxState.current.zoom;
@@ -474,9 +473,9 @@ const Player: React.FC<PlayerProps> = ({
          if(videoEl && clipData) {
              const timeInSegment = seekTime - targetSegment.startTime;
              let targetTime = targetSegment.clipStartTime + timeInSegment;
-             const sourceDuration = clipData.trimEnd - clipData.trimStart;
+             // Clamp to clip bounds (no looping)
              if (targetTime > clipData.trimEnd) {
-                 targetTime = clipData.trimStart + ((targetTime - clipData.trimStart) % sourceDuration);
+                 targetTime = clipData.trimEnd - 0.01;
              }
              videoEl.currentTime = targetTime;
              videoEl.style.opacity = '1';

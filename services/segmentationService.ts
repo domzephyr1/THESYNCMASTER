@@ -117,24 +117,116 @@ export class SegmentationService {
       const syncScore = this.calculateSegmentScore(beat, clip, inDrop, isHero);
       totalScore += syncScore;
 
-      // --- Build Segment ---
-      const segment: EnhancedSyncSegment = {
-        startTime: beat.time,
-        endTime,
-        duration: endTime - beat.time,
-        videoIndex: clipSelection.index,
-        clipStartTime,
-        transition,
-        prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
-        filter,
-        isHeroSegment: isHero,
-        isDropSegment: inDrop,
-        rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
-        playbackSpeed,
-        syncScore
-      };
+      // --- Build Segment(s) ---
+      // Check if segment duration exceeds clip's available duration
+      // If so, split into multiple segments with different clips
+      const segmentDuration = endTime - beat.time;
+      const clipAvailableDuration = clip.trimEnd - clip.trimStart;
 
-      segments.push(segment);
+      // Guard against clips with 0 or invalid duration
+      const effectiveClipDuration = clipAvailableDuration > 0 ? clipAvailableDuration : 6; // Default to 6 seconds
+
+      if (segmentDuration > effectiveClipDuration) {
+        // Split into multiple segments
+        let remainingDuration = segmentDuration;
+        let currentStartTime = beat.time;
+        let isFirstSubSegment = true;
+        let usedClipIndices: Set<number> = new Set(); // Track used clips to avoid immediate repeats
+
+        while (remainingDuration > 0.1) { // 0.1s threshold to avoid tiny segments
+          // Select clip for this sub-segment
+          let subClipSelection: { index: number };
+          let subClip: VideoClip;
+          let subClipStartTime: number;
+
+          if (isFirstSubSegment) {
+            // Use the originally selected clip for the first sub-segment
+            subClipSelection = clipSelection;
+            subClip = clip;
+            subClipStartTime = clipStartTime;
+            usedClipIndices.add(clipSelection.index);
+          } else {
+            // Select a different clip for subsequent sub-segments
+            // Prefer clips not recently used in this split
+            subClipSelection = this.selectClipForSegment(
+              beat,
+              videoClips,
+              segments,
+              isHero,
+              heroClipIndices,
+              inDrop,
+              enableSmartReorder
+            );
+
+            // If we got the same clip, try to find an alternative
+            if (usedClipIndices.has(subClipSelection.index) && videoClips.length > 1) {
+              const alternatives = videoClips
+                .map((_, idx) => idx)
+                .filter(idx => !usedClipIndices.has(idx));
+              if (alternatives.length > 0) {
+                subClipSelection = { index: alternatives[Math.floor(Math.random() * alternatives.length)] };
+              }
+            }
+
+            subClip = videoClips[subClipSelection.index];
+            subClipStartTime = subClip.trimStart; // Start from beginning for fill clips
+            usedClipIndices.add(subClipSelection.index);
+
+            // Reset used clips if we've used them all (allow reuse in long segments)
+            if (usedClipIndices.size >= videoClips.length) {
+              usedClipIndices.clear();
+            }
+          }
+
+          const subClipAvailableDuration = subClip.trimEnd - subClip.trimStart;
+          // Ensure we have a valid duration, default to 6 seconds if clip duration is invalid
+          const effectiveSubDuration = subClipAvailableDuration > 0 ? subClipAvailableDuration : 6;
+          const subSegmentDuration = Math.min(remainingDuration, effectiveSubDuration);
+          const subEndTime = currentStartTime + subSegmentDuration;
+
+          const segment: EnhancedSyncSegment = {
+            startTime: currentStartTime,
+            endTime: subEndTime,
+            duration: subSegmentDuration,
+            videoIndex: subClipSelection.index,
+            clipStartTime: subClipStartTime,
+            transition: isFirstSubSegment ? transition : TransitionType.CUT, // Smooth cut for fill segments
+            prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
+            filter,
+            isHeroSegment: isHero && isFirstSubSegment,
+            isDropSegment: inDrop,
+            rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
+            playbackSpeed,
+            syncScore: isFirstSubSegment ? syncScore : Math.round(syncScore * 0.8) // Slightly lower score for fill segments
+          };
+
+          segments.push(segment);
+
+          remainingDuration -= subSegmentDuration;
+          currentStartTime = subEndTime;
+          isFirstSubSegment = false;
+        }
+      } else {
+        // Normal case: segment fits within clip duration
+        const segment: EnhancedSyncSegment = {
+          startTime: beat.time,
+          endTime,
+          duration: endTime - beat.time,
+          videoIndex: clipSelection.index,
+          clipStartTime,
+          transition,
+          prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
+          filter,
+          isHeroSegment: isHero,
+          isDropSegment: inDrop,
+          rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
+          playbackSpeed,
+          syncScore
+        };
+
+        segments.push(segment);
+      }
+
       currentBeatIndex += segmentBeats;
     }
 
