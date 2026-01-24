@@ -195,7 +195,7 @@ export class SegmentationService {
     };
   }
 
-  // PIVOT: Weighted Selection Engine
+  // PIVOT: Weighted Selection Engine with Strong Variety Enforcement
   private selectClipForSegment(
     beat: BeatMarker,
     clips: VideoClip[],
@@ -205,6 +205,9 @@ export class SegmentationService {
     inDrop: boolean,
     enableSmartReorder: boolean
   ): { index: number } {
+    // Track recent clips for variety (last 3-5 segments)
+    const recentWindow = Math.min(5, Math.floor(clips.length / 2));
+    const recentClips = existingSegments.slice(-recentWindow).map(s => s.videoIndex);
     const lastUsedIndex = existingSegments[existingSegments.length - 1]?.videoIndex ?? -1;
 
     const scored = clips.map((clip, index) => {
@@ -216,13 +219,22 @@ export class SegmentationService {
         score += (1 - delta) * 60; // Huge weight on motion matching
       }
 
-      if (index === lastUsedIndex) score -= 100; // Hard penalty for immediate repeats
-      
+      // HARD BLOCK: Never repeat immediately
+      if (index === lastUsedIndex) score -= 200;
+
+      // SOFT PENALTY: Penalize recently used clips (graduated)
+      const recentIndex = recentClips.indexOf(index);
+      if (recentIndex !== -1) {
+        // More recent = higher penalty (0 = oldest in window, recentWindow-1 = most recent)
+        const recency = (recentIndex + 1) / recentWindow;
+        score -= 50 * recency;
+      }
+
       if (isHero && heroClipIndices.includes(index)) score += 40;
       if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.5) score += 30;
 
       // Brightness continuity
-      if (enableSmartReorder && existingSegments.length > 0) {
+      if (enableSmartReorder && existingSegments.length > 0 && lastUsedIndex >= 0) {
         const lastClip = clips[lastUsedIndex];
         if (lastClip?.metadata?.brightness && clip.metadata?.brightness) {
           const bDiff = Math.abs(clip.metadata.brightness - lastClip.metadata.brightness);
@@ -234,7 +246,6 @@ export class SegmentationService {
     });
 
     scored.sort((a, b) => b.score - a.score);
-    // Take the absolute best match for "Millionaire" performance
     return { index: scored[0].index };
   }
 
