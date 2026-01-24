@@ -309,15 +309,28 @@ function App() {
     }
   }, [audioBuffer, minEnergy, peakSensitivity]);
 
+  // Track previous slider values to only resync when they actually change
+  const prevMinEnergyRef = useRef(minEnergy);
+  const prevSensitivityRef = useRef(peakSensitivity);
+
   useEffect(() => {
-    if (step === AppStep.PREVIEW && audioBuffer && !isAnalyzing) {
+    // Only trigger if slider VALUES changed, not other state
+    const energyChanged = prevMinEnergyRef.current !== minEnergy;
+    const sensitivityChanged = prevSensitivityRef.current !== peakSensitivity;
+
+    prevMinEnergyRef.current = minEnergy;
+    prevSensitivityRef.current = peakSensitivity;
+
+    if ((energyChanged || sensitivityChanged) && step === AppStep.PREVIEW && audioBuffer && !isAnalyzing) {
+        if (autoResyncTimerRef.current) clearTimeout(autoResyncTimerRef.current);
         autoResyncTimerRef.current = setTimeout(() => {
             handleReSync();
-        }, 500); // Faster debounce for snappier UI feel
-        return () => {
-          if (autoResyncTimerRef.current) clearTimeout(autoResyncTimerRef.current);
-        };
+        }, 600);
     }
+
+    return () => {
+      if (autoResyncTimerRef.current) clearTimeout(autoResyncTimerRef.current);
+    };
   }, [minEnergy, peakSensitivity, step, audioBuffer, isAnalyzing, handleReSync]);
 
   const applyPreset = (presetId: string) => {
