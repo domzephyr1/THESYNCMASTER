@@ -1,40 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { BeatMarker, EnhancedSyncSegment, VideoClip, TransitionType, MediaElementWithCapture } from '../types';
+import { BeatMarker, EnhancedSyncSegment, VideoClip, TransitionType } from '../types';
 import { Play, Pause, SkipBack, Loader2, Disc } from 'lucide-react';
-import { PLAYBACK, TIMEOUTS } from '../constants';
-
-/**
- * Safely attempt to play a video/audio element.
- * Browsers may throw NotAllowedError if autoplay is blocked - this is expected and can be ignored.
- */
-const safePlay = (element: HTMLMediaElement | null): void => {
-  if (!element) return;
-  element.play().catch((err: Error) => {
-    // NotAllowedError is expected when autoplay is blocked - ignore silently
-    if (err.name !== 'NotAllowedError') {
-      console.warn('Media play failed:', err.message);
-    }
-  });
-};
-
-/**
- * Safely set currentTime on a media element.
- * Guards against NaN, Infinity, and negative values that would throw errors.
- */
-const safeSetCurrentTime = (element: HTMLMediaElement | null, time: number): boolean => {
-  if (!element) return false;
-  if (!isFinite(time) || time < 0) {
-    console.warn('Invalid currentTime value:', time);
-    return false;
-  }
-  try {
-    element.currentTime = time;
-    return true;
-  } catch (e) {
-    console.warn('Failed to set currentTime:', e);
-    return false;
-  }
-};
 
 // Binary search for finding segment at a given time - O(log n) instead of O(n)
 function findSegmentAtTime(segments: EnhancedSyncSegment[], time: number): EnhancedSyncSegment | null {
@@ -117,113 +83,15 @@ const Player: React.FC<PlayerProps> = ({
   const preloadedClipIndexRef = useRef<number>(-1);
   const preloadingRef = useRef<boolean>(false);
 
-  // Store segments in ref so animation loop can access latest without restarting
-  const segmentsRef = useRef<EnhancedSyncSegment[]>(segments);
-  const videoClipsRef = useRef<VideoClip[]>(videoClips);
-  // Store callback in ref to avoid stale closure issues
-  const onTimeUpdateRef = useRef(onTimeUpdate);
-
-  // Update refs when props change (doesn't restart animation loop)
-  useEffect(() => {
-    segmentsRef.current = segments;
-  }, [segments]);
-
-  useEffect(() => {
-    videoClipsRef.current = videoClips;
-  }, [videoClips]);
-
-  useEffect(() => {
-    onTimeUpdateRef.current = onTimeUpdate;
-  }, [onTimeUpdate]);
-
-  // Track previous segments to detect changes
-  const prevSegmentsRef = useRef<EnhancedSyncSegment[]>([]);
-  const segmentsVersionRef = useRef(0);
-
-  // Initialize and preload videos for smooth playback
+  // Initialize
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
-      // Check if segments actually changed (not just a re-render)
-      const segmentsChanged = prevSegmentsRef.current.length !== segments.length ||
-        (segments.length > 0 && prevSegmentsRef.current.length > 0 &&
-          segments[0].startTime !== prevSegmentsRef.current[0]?.startTime);
-
-      if (segmentsChanged) {
-        console.log('🔄 Segments changed, resetting player state');
-        segmentsVersionRef.current++;
-
-        // Reset preload state
-        preloadedClipIndexRef.current = -1;
-        preloadingRef.current = false;
-        nextSegmentIndexRef.current = -1;
-
-        // Reset to first segment's clip
+        // Initialize to first segment's clip
         activeClipRef.current = segments[0].videoIndex;
         prevClipRef.current = -1;
-
-        // Reset all video states
-        videoRefs.current.forEach((video, idx) => {
-          if (video) {
-            video.style.opacity = idx === segments[0].videoIndex ? '1' : '0';
-            video.style.zIndex = idx === segments[0].videoIndex ? '10' : '0';
-            video.style.transform = 'scale(1)';
-            video.style.filter = '';
-          }
-        });
-
-        // Set the first video to the correct position
-        const firstVideo = videoRefs.current[segments[0].videoIndex];
-        if (firstVideo) {
-          safeSetCurrentTime(firstVideo, segments[0].clipStartTime);
-        }
-
-        setDisplayClipIndex(segments[0].videoIndex);
-      }
-
-      prevSegmentsRef.current = segments;
-
-      // Only preload on initial load or when segments change significantly
-      // Don't preload when just editing individual segment properties
-      if (!isReady || segmentsChanged) {
-        // Preload first 3 unique video clips used in segments for smooth start
-        const preloadVideos = async () => {
-          const uniqueIndices = [...new Set(segments.slice(0, 10).map(s => s.videoIndex))].slice(0, 3);
-
-          await Promise.all(
-            uniqueIndices.map(idx => {
-              return new Promise<void>((resolve) => {
-                const video = videoRefs.current[idx];
-                if (video) {
-                  // Already loaded - don't call load() again
-                  if (video.readyState >= 3) {
-                    resolve();
-                    return;
-                  }
-                  const onReady = () => {
-                    video.removeEventListener('canplaythrough', onReady);
-                    resolve();
-                  };
-                  video.addEventListener('canplaythrough', onReady);
-                  // Only load if not already loading/loaded
-                  if (video.readyState === 0) {
-                    video.load();
-                  }
-                  // Timeout fallback
-                  setTimeout(resolve, 2000);
-                } else {
-                  resolve();
-                }
-              });
-            })
-          );
-
-          setIsReady(true);
-        };
-
-        preloadVideos();
-      }
+        setIsReady(true);
     }
-  }, [segments, videoClips, isReady]);
+  }, [segments, videoClips]);
 
   // Cleanup video elements on unmount to prevent memory leaks
   useEffect(() => {
@@ -248,12 +116,8 @@ const Player: React.FC<PlayerProps> = ({
       if (canvas && audio) {
         const canvasStream = canvas.captureStream(30);
         let audioStream: MediaStream | null = null;
-        const audioWithCapture = audio as MediaElementWithCapture;
-        if (audioWithCapture.captureStream) {
-          audioStream = audioWithCapture.captureStream();
-        } else if (audioWithCapture.mozCaptureStream) {
-          audioStream = audioWithCapture.mozCaptureStream();
-        }
+        if ((audio as any).captureStream) audioStream = (audio as any).captureStream();
+        else if ((audio as any).mozCaptureStream) audioStream = (audio as any).mozCaptureStream();
         
         const tracks = [...canvasStream.getVideoTracks(), ...(audioStream ? audioStream.getAudioTracks() : [])];
         const combinedStream = new MediaStream(tracks);
@@ -290,23 +154,19 @@ const Player: React.FC<PlayerProps> = ({
     const animate = () => {
       if (!audio) return;
       const currentTime = audio.currentTime;
-      onTimeUpdateRef.current(currentTime);
+      onTimeUpdate(currentTime);
 
       // FX Decay
-      if (fxState.current.flash > 0) fxState.current.flash *= PLAYBACK.FLASH_DECAY_RATE;
+      if (fxState.current.flash > 0) fxState.current.flash *= 0.85; 
       if (fxState.current.glitch > 0) fxState.current.glitch -= 1;
-
+      
       // Zoom return to 1.0 (slow ease out)
-      if (fxState.current.zoom > 1.0) fxState.current.zoom = 1.0 + (fxState.current.zoom - 1.0) * PLAYBACK.ZOOM_DECAY_RATE;
-      if (fxState.current.zoom < PLAYBACK.ZOOM_RESET_THRESHOLD) fxState.current.zoom = 1.0;
+      if (fxState.current.zoom > 1.0) fxState.current.zoom = 1.0 + (fxState.current.zoom - 1.0) * 0.95;
+      if (fxState.current.zoom < 1.001) fxState.current.zoom = 1.0;
 
-      // Use refs to get latest segments/clips without restarting animation loop
-      const currentSegments = segmentsRef.current;
-      const currentVideoClips = videoClipsRef.current;
-
-      if (currentSegments.length > 0) {
+      if (segments.length > 0) {
         // Use binary search for O(log n) lookup instead of O(n) .find()
-        const currentSegment = findSegmentAtTime(currentSegments, currentTime);
+        const currentSegment = findSegmentAtTime(segments, currentTime);
 
         if (currentSegment) {
           const timeInSegment = currentTime - currentSegment.startTime;
@@ -316,15 +176,6 @@ const Player: React.FC<PlayerProps> = ({
           // --- CUT EVENT ---
           if (currentSegment.videoIndex !== activeClipIndex) {
             const newClipIndex = currentSegment.videoIndex;
-
-            console.log('🎬 CUT EVENT:', {
-              time: (currentTime || 0).toFixed(2),
-              fromClip: activeClipIndex,
-              toClip: newClipIndex,
-              segmentStart: (currentSegment?.startTime || 0).toFixed(2),
-              timeInSegment: (timeInSegment || 0).toFixed(2),
-              wasPreloaded: preloadedClipIndexRef.current === newClipIndex
-            });
 
             // Update refs (no re-render)
             prevClipRef.current = activeClipIndex;
@@ -341,29 +192,40 @@ const Player: React.FC<PlayerProps> = ({
             // Show and play new video
             const videoEl = videoRefs.current[newClipIndex];
             if (videoEl) {
-              // Check if this clip was preloaded to the correct position
+              // Check if this clip was preloaded
               const wasPreloaded = preloadedClipIndexRef.current === newClipIndex;
 
-              // ALWAYS set position precisely at cut - this is critical for sync
-              const targetStartTime = currentSegment.clipStartTime;
-              safeSetCurrentTime(videoEl, targetStartTime);
+              // Seek to correct position - start at clipStartTime (timeInSegment should be ~0 at cut)
+              if (!wasPreloaded) {
+                videoEl.currentTime = currentSegment.clipStartTime;
+              }
 
-              // Set playback speed BEFORE playing
-              videoEl.playbackRate = currentSegment.playbackSpeed || 1.0;
-
-              // Make visible
               videoEl.style.opacity = '1';
               videoEl.style.zIndex = '10';
               videoEl.style.transform = 'scale(1)';
               videoEl.style.filter = '';
+              // Apply speed ramping if present
+              videoEl.playbackRate = currentSegment.playbackSpeed || 1.0;
 
-              // Start playing immediately - don't wait
+              // Only play if buffer is ready (prevents freeze frames)
               if (isPlaying) {
-                safePlay(videoEl);
+                if (videoEl.readyState >= 3 || wasPreloaded) {
+                  // HAVE_FUTURE_DATA or preloaded = ready to play
+                  videoEl.play().catch(() => {});
+                } else {
+                  // Wait for buffer
+                  const onCanPlay = () => {
+                    videoEl.play().catch(() => {});
+                    videoEl.removeEventListener('canplay', onCanPlay);
+                  };
+                  videoEl.addEventListener('canplay', onCanPlay, { once: true });
+                }
               }
 
-              // Reset preload state
-              preloadedClipIndexRef.current = -1;
+              // Reset preload state for this clip
+              if (wasPreloaded) {
+                preloadedClipIndexRef.current = -1;
+              }
             }
 
             // Update UI state less frequently (every cut is fine)
@@ -373,53 +235,47 @@ const Player: React.FC<PlayerProps> = ({
              // --- DURING SEGMENT RENDER ---
              const activeVideo = videoRefs.current[activeClipIndex];
              const prevVideo = videoRefs.current[prevClipIndex];
-
-             // 1. Sync Active Video - LET IT PLAY NATURALLY, only correct major drift
-             const clipData = currentVideoClips[activeClipIndex];
+             
+             // 1. Sync Active Video
+             const clipData = videoClips[activeClipIndex];
              if (activeVideo && clipData) {
                  const targetVideoTime = currentSegment.clipStartTime + timeInSegment;
                  const drift = Math.abs(activeVideo.currentTime - targetVideoTime);
 
-                 // Handle Looping ONLY - if segment needs to loop back
+                 // Handle Looping if segment is longer than clip source
                  const sourceDuration = clipData.trimEnd - clipData.trimStart;
+                 let loopAdjustedTime = targetVideoTime;
                  if (targetVideoTime >= clipData.trimEnd) {
-                    const loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
-                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > PLAYBACK.LOOP_SYNC_TOLERANCE) {
-                        safeSetCurrentTime(activeVideo, loopAdjustedTime);
+                    loopAdjustedTime = clipData.trimStart + ((targetVideoTime - clipData.trimStart) % sourceDuration);
+                    if (Math.abs(activeVideo.currentTime - loopAdjustedTime) > 0.2) {
+                        activeVideo.currentTime = loopAdjustedTime;
                     }
-                 }
-                 // REMOVED: Constant drift correction - this was causing stuttering
-                 // Only correct if SEVERELY out of sync - indicates a real problem
-                 else if (drift > PLAYBACK.MAX_DRIFT_TOLERANCE) {
-                    console.log('⚡ Major drift correction:', drift.toFixed(3));
-                    safeSetCurrentTime(activeVideo, targetVideoTime);
+                 } else {
+                    // Standard Sync - much tighter threshold for smoothness
+                    if (drift > 0.15) activeVideo.currentTime = targetVideoTime;
                  }
 
                  // Ensure video is playing
-                 if (isPlaying && activeVideo.paused) safePlay(activeVideo);
-
-                 // Apply speed ramping (set once per segment, not every frame)
-                 const targetSpeed = currentSegment.playbackSpeed || 1.0;
-                 if (Math.abs(activeVideo.playbackRate - targetSpeed) > 0.01) {
-                   activeVideo.playbackRate = targetSpeed;
-                 }
+                 if (isPlaying && activeVideo.paused) activeVideo.play().catch(()=>{});
 
                  // Apply Transforms
                  let scale = fxState.current.zoom;
                  let translateX = 0;
                  let opacity = 1;
-                 let currentFilter = currentSegment.filter;
+                 // Minimal safety change: disable all auto-applied preview filters (B/W, warm, etc.)
+                 // Export is handled elsewhere; this only affects in-browser preview rendering.
+                 let currentFilter: EnhancedSyncSegment['filter'] = 'none';
 
                  // Glitch Effect
                  if (fxState.current.glitch > 0) {
                      translateX = (Math.random() - 0.5) * 20;
                      scale = 1.05 + Math.random() * 0.05;
-                     if (Math.random() > 0.5) currentFilter = 'cyber';
+                     // Keep filter disabled even during glitch effect
                  }
 
                  // Crossfade Logic
                  if (currentSegment.transition === TransitionType.CROSSFADE) {
-                     const fadeDuration = PLAYBACK.CROSSFADE_DURATION;
+                     const fadeDuration = 0.5; 
                      if (timeInSegment < fadeDuration) {
                          opacity = timeInSegment / fadeDuration; // 0 -> 1
                          
@@ -427,7 +283,7 @@ const Player: React.FC<PlayerProps> = ({
                          if (prevVideo && prevClipIndex !== -1) {
                              prevVideo.style.opacity = (1 - opacity).toString();
                              prevVideo.style.zIndex = '5';
-                             if (prevVideo.paused && isPlaying) safePlay(prevVideo);
+                             if (prevVideo.paused && isPlaying) prevVideo.play().catch(()=>{});
                          }
                      } else {
                          if (prevVideo) {
@@ -459,16 +315,16 @@ const Player: React.FC<PlayerProps> = ({
 
              // --- PREDICTIVE PRELOADING (Look-ahead) ---
              // Find next segment
-             const currentSegmentIndex = currentSegments.findIndex(seg =>
+             const currentSegmentIndex = segments.findIndex(seg =>
                currentTime >= seg.startTime && currentTime < seg.endTime
              );
 
-             if (currentSegmentIndex >= 0 && currentSegmentIndex < currentSegments.length - 1) {
-               const nextSegment = currentSegments[currentSegmentIndex + 1];
+             if (currentSegmentIndex >= 0 && currentSegmentIndex < segments.length - 1) {
+               const nextSegment = segments[currentSegmentIndex + 1];
                const timeUntilNextCut = nextSegment.startTime - currentTime;
 
-               // Start preloading before cut
-               if (timeUntilNextCut < PLAYBACK.PRELOAD_LOOKAHEAD && timeUntilNextCut > 0) {
+               // Start preloading 500ms before cut
+               if (timeUntilNextCut < 0.5 && timeUntilNextCut > 0) {
                  const nextClipIndex = nextSegment.videoIndex;
 
                  // Only preload if not already preloaded and not currently preloading
@@ -485,7 +341,7 @@ const Player: React.FC<PlayerProps> = ({
 
                      // Check if we need to seek
                      if (Math.abs(nextVideo.currentTime - targetTime) > 0.1) {
-                       safeSetCurrentTime(nextVideo, targetTime);
+                       nextVideo.currentTime = targetTime;
 
                        // Wait for buffer to be ready
                        const onSeeked = () => {
@@ -505,7 +361,7 @@ const Player: React.FC<PlayerProps> = ({
                            preloadedClipIndexRef.current = nextClipIndex;
                            preloadingRef.current = false;
                          }
-                       }, TIMEOUTS.PRELOAD_TIMEOUT);
+                       }, 300);
                      } else {
                        // Already at correct position
                        preloadedClipIndexRef.current = nextClipIndex;
@@ -535,11 +391,11 @@ const Player: React.FC<PlayerProps> = ({
            // Simple draw for recorder
            if (prevClipRef.current !== -1 && prevClipRef.current !== activeClipRef.current) {
                const prevVideo = videoRefs.current[prevClipRef.current];
-               const currentSeg = findSegmentAtTime(currentSegments, currentTime);
+               const currentSeg = findSegmentAtTime(segments, currentTime);
                if (prevVideo && currentSeg?.transition === TransitionType.CROSSFADE) {
                     const time = currentTime - currentSeg.startTime;
-                    if (time < PLAYBACK.CROSSFADE_DURATION) {
-                        ctx.globalAlpha = 1 - (time / PLAYBACK.CROSSFADE_DURATION);
+                    if (time < 0.5) {
+                        ctx.globalAlpha = 1 - (time/0.5);
                         ctx.drawImage(prevVideo, 0, 0, w, h);
                         ctx.globalAlpha = 1.0;
                     }
@@ -562,50 +418,39 @@ const Player: React.FC<PlayerProps> = ({
       const currentVideo = videoRefs.current[activeClipRef.current];
       if (currentVideo) {
         currentVideo.style.opacity = '1';
-        safePlay(currentVideo);
+        currentVideo.play().catch(() => {});
       }
       requestRef.current = requestAnimationFrame(animate);
     } else {
-      // IMMEDIATELY stop animation loop first
-      if (requestRef.current) {
-        cancelAnimationFrame(requestRef.current);
-        requestRef.current = null;
-      }
-
-      // Pause all videos immediately
-      videoRefs.current.forEach(v => {
-        if (v) {
-          v.pause();
-        }
-      });
-
-      // Then handle audio pause (with promise safety)
+      // Wait for any pending play promise before pausing
       if (playPromiseRef.current) {
         playPromiseRef.current.then(() => {
           audio.pause();
         }).catch(() => {
+          // Play was already interrupted, safe to pause
           audio.pause();
         });
         playPromiseRef.current = null;
       } else {
         audio.pause();
       }
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      videoRefs.current.forEach(v => v && v.pause());
     }
 
     return () => {
         if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  // Only restart animation loop when isPlaying changes - segments/clips use refs
-  }, [isPlaying]); 
+  }, [isPlaying, segments, videoClips]); 
 
   // 4. Handle External Seek
   useEffect(() => {
     if (seekTime !== null && audioRef.current) {
-      safeSetCurrentTime(audioRef.current, seekTime);
-      onTimeUpdateRef.current(seekTime);
+      audioRef.current.currentTime = seekTime;
+      onTimeUpdate(seekTime);
 
-      // Use binary search for segment lookup (use ref for latest segments)
-      const targetSegment = findSegmentAtTime(segmentsRef.current, seekTime);
+      // Use binary search for segment lookup
+      const targetSegment = findSegmentAtTime(segments, seekTime);
       if (targetSegment) {
          // Hide current video
          const currentVideo = videoRefs.current[activeClipRef.current];
@@ -624,23 +469,22 @@ const Player: React.FC<PlayerProps> = ({
          fxState.current.glitch = 0;
 
          const videoEl = videoRefs.current[targetSegment.videoIndex];
-         const clipData = videoClipsRef.current[targetSegment.videoIndex];
+         const clipData = videoClips[targetSegment.videoIndex];
 
          if(videoEl && clipData) {
              const timeInSegment = seekTime - targetSegment.startTime;
              let targetTime = targetSegment.clipStartTime + timeInSegment;
              const sourceDuration = clipData.trimEnd - clipData.trimStart;
-             if (sourceDuration > 0 && targetTime > clipData.trimEnd) {
+             if (targetTime > clipData.trimEnd) {
                  targetTime = clipData.trimStart + ((targetTime - clipData.trimStart) % sourceDuration);
              }
-             safeSetCurrentTime(videoEl, targetTime);
+             videoEl.currentTime = targetTime;
              videoEl.style.opacity = '1';
              videoEl.style.zIndex = '10';
          }
       }
     }
-  // Only react to seekTime changes - segments/clips use refs
-  }, [seekTime]);
+  }, [seekTime, segments, videoClips]);
 
   if (!isReady && videoClips.length > 0) {
     return (
