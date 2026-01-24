@@ -230,12 +230,15 @@ const Player: React.FC<PlayerProps> = ({
         // Pause old video
         if (activeVideo) activeVideo.pause();
 
-        // Start new video
+        // Start new video (only if ready to avoid stalling)
         const newVideo = videoPoolRefs.current[newSlot];
         if (newVideo) {
           newVideo.currentTime = currentSegment.clipStartTime;
           newVideo.playbackRate = currentSegment.playbackSpeed || 1.0;
-          if (isPlaying) newVideo.play().catch(() => {});
+          // Guard: only play if HAVE_FUTURE_DATA or better
+          if (isPlaying && newVideo.readyState >= 3) {
+            newVideo.play().catch(() => {});
+          }
         }
 
         prevSlotRef.current = activeSlot;
@@ -252,7 +255,8 @@ const Player: React.FC<PlayerProps> = ({
           const drift = Math.abs(activeVideo.currentTime - clampedTime);
           if (drift > 0.1) activeVideo.currentTime = clampedTime;
 
-          if (isPlaying && activeVideo.paused && !activeVideo.ended) {
+          // Guard: only play if HAVE_FUTURE_DATA or better
+          if (isPlaying && activeVideo.paused && !activeVideo.ended && activeVideo.readyState >= 3) {
             activeVideo.play().catch(() => {});
           }
         }
@@ -295,7 +299,10 @@ const Player: React.FC<PlayerProps> = ({
     if (isPlaying) {
       playPromiseRef.current = audio.play().catch(() => {});
       const activeVideo = videoPoolRefs.current[activeSlotRef.current];
-      if (activeVideo) activeVideo.play().catch(() => {});
+      // Guard: only play if HAVE_FUTURE_DATA or better
+      if (activeVideo && activeVideo.readyState >= 3) {
+        activeVideo.play().catch(() => {});
+      }
       requestRef.current = requestAnimationFrame(renderFrame);
     } else {
       if (playPromiseRef.current) {
