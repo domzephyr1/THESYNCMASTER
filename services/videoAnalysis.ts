@@ -125,12 +125,32 @@ export class VideoAnalysisService {
         resolve(e.data);
       };
       this.worker?.addEventListener('message', handler);
-      
+
       // Transfer buffers to prevent UI lag during analysis
       const d1 = new Uint8ClampedArray(data);
       const d2 = new Uint8ClampedArray(prevData);
       this.worker?.postMessage({ data: d1, prevData: d2 }, [d1.buffer, d2.buffer]);
     });
+  }
+
+  // Cleanup method to free memory from Worker
+  public purgeAnalysisCache() {
+    // Clear the blob URL to free up memory from the Worker
+    if (this.workerBlobUrl) {
+      URL.revokeObjectURL(this.workerBlobUrl);
+      this.workerBlobUrl = null;
+    }
+
+    // Terminate the worker if it's currently idle
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+
+    // Re-initialize for next use
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    this.workerBlobUrl = URL.createObjectURL(blob);
+    this.worker = new Worker(this.workerBlobUrl);
   }
 }
 
