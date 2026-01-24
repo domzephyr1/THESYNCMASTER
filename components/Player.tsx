@@ -79,8 +79,17 @@ const Player: React.FC<PlayerProps> = ({
     return 0;
   };
 
+  // Draw a single frame to the display canvas
+  const drawFrameToCanvas = (video: HTMLVideoElement) => {
+    const canvas = displayCanvasRef.current;
+    const ctx = canvas?.getContext('2d', { alpha: false });
+    if (ctx && canvas && video.readyState >= 2) {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    }
+  };
+
   // Load clip into slot
-  const loadClipIntoSlot = (slot: number, clipIndex: number, seekTo?: number) => {
+  const loadClipIntoSlot = (slot: number, clipIndex: number, seekTo?: number, drawInitialFrame?: boolean) => {
     const video = videoPoolRefs.current[slot];
     const clip = videoClips[clipIndex];
     if (!video || !clip) return;
@@ -92,12 +101,20 @@ const Player: React.FC<PlayerProps> = ({
       const onReady = () => {
         poolSlots.current[slot].ready = true;
         if (seekTo !== undefined) video.currentTime = seekTo;
+        // Draw initial frame to canvas if requested
+        if (drawInitialFrame) {
+          // Small delay to ensure frame is decoded after seek
+          setTimeout(() => drawFrameToCanvas(video), 50);
+        }
         video.removeEventListener('canplaythrough', onReady);
       };
       video.addEventListener('canplaythrough', onReady);
       video.load();
     } else if (seekTo !== undefined) {
       video.currentTime = seekTo;
+      if (drawInitialFrame) {
+        setTimeout(() => drawFrameToCanvas(video), 50);
+      }
     }
   };
 
@@ -105,16 +122,18 @@ const Player: React.FC<PlayerProps> = ({
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
       const firstClip = segments[0].videoIndex;
-      loadClipIntoSlot(0, firstClip, segments[0].clipStartTime);
-      activeSlotRef.current = 0;
-      setDisplayClipIndex(firstClip);
 
-      // Setup canvas size
+      // Setup canvas size first
       const canvas = displayCanvasRef.current;
       if (canvas) {
         canvas.width = 1280;
         canvas.height = 720;
       }
+
+      // Load first clip and draw initial frame
+      loadClipIntoSlot(0, firstClip, segments[0].clipStartTime, true);
+      activeSlotRef.current = 0;
+      setDisplayClipIndex(firstClip);
 
       setIsReady(true);
     }
@@ -315,22 +334,19 @@ const Player: React.FC<PlayerProps> = ({
         let targetSlot = poolSlots.current.findIndex(s => s.clipIndex === newClipIdx);
         if (targetSlot === -1) {
           targetSlot = findAvailableSlot([]);
-          loadClipIntoSlot(targetSlot, newClipIdx, targetTime);
+          loadClipIntoSlot(targetSlot, newClipIdx, targetTime, true);
+        } else {
+          const targetVideo = videoPoolRefs.current[targetSlot];
+          if (targetVideo) {
+            targetVideo.currentTime = targetTime;
+            // Draw frame after seek settles
+            setTimeout(() => drawFrameToCanvas(targetVideo), 50);
+          }
         }
-
-        const targetVideo = videoPoolRefs.current[targetSlot];
-        if (targetVideo) targetVideo.currentTime = targetTime;
 
         activeSlotRef.current = targetSlot;
         prevSlotRef.current = -1;
         setDisplayClipIndex(newClipIdx);
-
-        // Immediately draw frame to canvas
-        const canvas = displayCanvasRef.current;
-        const ctx = canvas?.getContext('2d', { alpha: false });
-        if (ctx && targetVideo && targetVideo.readyState >= 2) {
-          ctx.drawImage(targetVideo, 0, 0, canvas!.width, canvas!.height);
-        }
       }
     }
   }, [seekTime, segments, videoClips]);
