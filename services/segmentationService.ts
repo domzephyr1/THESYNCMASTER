@@ -1,11 +1,4 @@
 import { BeatMarker, EnhancedSyncSegment, TransitionType, VideoClip, DropZone, PhraseData, MontageOptions, MontageResult, StylePreset } from '../types';
-import {
-  BEAT_DETECTION,
-  CLIP_SELECTION,
-  SPEED_RAMPING,
-  SYNC_SCORING,
-  BPM
-} from '../constants';
 
 export class SegmentationService {
 
@@ -37,46 +30,6 @@ export class SegmentationService {
     const segments: EnhancedSyncSegment[] = [];
     let currentBeatIndex = 0;
     let totalScore = 0;
-
-    // --- Handle Intro Gap (before first beat) ---
-    // If first beat doesn't start at 0, create intro segments with non-repeating clips
-    const firstBeatTime = beats.length > 0 ? beats[0].time : 0;
-    if (firstBeatTime > 0.5) { // Only if there's a significant gap (>0.5s)
-      const INTRO_SEGMENT_DURATION = 5; // Target ~5 seconds per intro segment
-      const introSegmentCount = Math.ceil(firstBeatTime / INTRO_SEGMENT_DURATION);
-      const actualSegmentDuration = firstBeatTime / introSegmentCount;
-
-      // Get multiple calm clips for intro (non-repeating)
-      const introClipIndices = this.selectMultipleIntroClips(videoClips, introSegmentCount);
-
-      let introStartTime = 0;
-      for (let i = 0; i < introSegmentCount; i++) {
-        const introEndTime = i === introSegmentCount - 1 ? firstBeatTime : introStartTime + actualSegmentDuration;
-        const clipIndex = introClipIndices[i];
-        const clip = videoClips[clipIndex];
-
-        const introSegment: EnhancedSyncSegment = {
-          startTime: introStartTime,
-          endTime: introEndTime,
-          duration: introEndTime - introStartTime,
-          videoIndex: clipIndex,
-          clipStartTime: clip?.trimStart || 0,
-          transition: i === 0 ? TransitionType.CUT : TransitionType.CROSSFADE,
-          prevVideoIndex: i > 0 ? introClipIndices[i - 1] : -1,
-          filter: 'none',
-          isHeroSegment: false,
-          isDropSegment: false,
-          playbackSpeed: 1.0,
-          syncScore: 50
-        };
-
-        segments.push(introSegment);
-        totalScore += 50;
-        introStartTime = introEndTime;
-      }
-
-      console.log(`📍 Added ${introSegmentCount} intro segments: 0s - ${firstBeatTime.toFixed(2)}s (Clips: ${introClipIndices.map(i => i + 1).join(', ')})`);
-    }
 
     while (currentBeatIndex < beats.length) {
       const beat = beats[currentBeatIndex];
@@ -122,7 +75,7 @@ export class SegmentationService {
       }
 
       // Minimum duration
-      const minDuration = inDrop ? BEAT_DETECTION.MIN_DROP_SEGMENT_DURATION : BEAT_DETECTION.MIN_SEGMENT_DURATION;
+      const minDuration = inDrop ? 0.12 : 0.2;
       if (endTime - beat.time < minDuration && nextBeat) {
         endTime = beat.time + minDuration;
       }
@@ -142,35 +95,21 @@ export class SegmentationService {
       const transition = this.selectTransition(beat, inDrop, atDropPeak, segments.length, preset);
 
       // --- Determine Filter ---
-      const filter = this.selectFilter(beat, inDrop, transition);
+      // Disable automatic stylistic filters in preview.
+      // Filters can still be applied manually via the editor by updating segment.filter.
+      const filter: EnhancedSyncSegment['filter'] = 'none';
 
       // --- Calculate Clip Start Time ---
       const clip = videoClips[clipSelection.index];
-      const segmentDuration = endTime - beat.time;
-
-      // Get actual clip boundaries (use duration as fallback for trimEnd)
-      const clipStart = clip.trimStart || 0;
-      const clipEnd = (clip.trimEnd && clip.trimEnd > clipStart) ? clip.trimEnd : (clip.duration || 30);
-      const totalClipDuration = clipEnd - clipStart;
-
-      const clipStartTime = this.calculateClipStartTime(clip, beat, segmentDuration, isHero, clipEnd);
-
-      // --- Check if segment exceeds clip duration (prevent looping) ---
-      const clipAvailableDuration = Math.max(0, clipEnd - clipStartTime);
-      // Split if segment is longer than what's left in the clip
-      const needsSplit = segmentDuration > clipAvailableDuration + 0.1 && clipAvailableDuration > 0.3;
-
-      if (needsSplit) {
-        console.log(`⚠️ Segment ${segments.length}: duration ${segmentDuration.toFixed(2)}s > clip available ${clipAvailableDuration.toFixed(2)}s - SPLITTING`);
-      }
+      const clipStartTime = this.calculateClipStartTime(clip, beat, endTime - beat.time, isHero);
 
       // --- Speed Ramping ---
       let playbackSpeed = 1.0;
       if (enableSpeedRamping) {
-        if (inDrop || beat.intensity > SPEED_RAMPING.HIGH_ENERGY_THRESHOLD) {
-          playbackSpeed = SPEED_RAMPING.HIGH_ENERGY_BASE_SPEED + (beat.intensity * SPEED_RAMPING.HIGH_ENERGY_INTENSITY_MULTIPLIER);
-        } else if (beat.intensity < SPEED_RAMPING.LOW_ENERGY_THRESHOLD) {
-          playbackSpeed = SPEED_RAMPING.LOW_ENERGY_BASE_SPEED + (beat.intensity * SPEED_RAMPING.LOW_ENERGY_INTENSITY_MULTIPLIER);
+        if (inDrop && beat.intensity > 0.8) {
+          playbackSpeed = 1.2; // Speed up on high energy
+        } else if (beat.intensity < 0.3 && !inDrop) {
+          playbackSpeed = 0.7; // Slow-mo on quiet parts
         }
       }
 
@@ -178,97 +117,24 @@ export class SegmentationService {
       const syncScore = this.calculateSegmentScore(beat, clip, inDrop, isHero);
       totalScore += syncScore;
 
-      if (needsSplit) {
-        // Split into multiple segments to avoid clip looping
-        let remainingDuration = segmentDuration;
-        let currentStartTime = beat.time;
-        let currentClipIndex = clipSelection.index;
-        let currentClipStart = clipStartTime;
-        let isFirstSplit = true;
-        let splitCount = 0;
-        const maxSplits = 10; // Safety limit to prevent infinite loops
+      // --- Build Segment ---
+      const segment: EnhancedSyncSegment = {
+        startTime: beat.time,
+        endTime,
+        duration: endTime - beat.time,
+        videoIndex: clipSelection.index,
+        clipStartTime,
+        transition,
+        prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
+        filter,
+        isHeroSegment: isHero,
+        isDropSegment: inDrop,
+        rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
+        playbackSpeed,
+        syncScore
+      };
 
-        console.log(`🔀 Splitting segment: ${segmentDuration.toFixed(2)}s into multiple clips`);
-
-        while (remainingDuration > 0.2 && splitCount < maxSplits) {
-          splitCount++;
-          const currentClip = videoClips[currentClipIndex];
-          if (!currentClip) {
-            console.warn(`Split: clip ${currentClipIndex} not found, breaking`);
-            break;
-          }
-          // Use proper clip end calculation
-          const currentClipStartPos = currentClip.trimStart || 0;
-          const currentClipEnd = (currentClip.trimEnd && currentClip.trimEnd > currentClipStartPos)
-            ? currentClip.trimEnd
-            : (currentClip.duration || 30);
-          const availableDuration = Math.max(0.3, currentClipEnd - currentClipStart);
-          const thisSegmentDuration = Math.min(remainingDuration, availableDuration);
-
-          console.log(`  Split ${splitCount}: clip ${currentClipIndex + 1}, start ${currentClipStart.toFixed(2)}s, duration ${thisSegmentDuration.toFixed(2)}s`);
-
-          const splitSegment: EnhancedSyncSegment = {
-            startTime: currentStartTime,
-            endTime: currentStartTime + thisSegmentDuration,
-            duration: thisSegmentDuration,
-            videoIndex: currentClipIndex,
-            clipStartTime: currentClipStart,
-            transition: isFirstSplit ? transition : TransitionType.CUT,
-            prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
-            filter,
-            isHeroSegment: isHero && isFirstSplit,
-            isDropSegment: inDrop,
-            rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
-            playbackSpeed,
-            syncScore: isFirstSplit ? syncScore : 50
-          };
-
-          segments.push(splitSegment);
-          if (!isFirstSplit) totalScore += 50;
-
-          remainingDuration -= thisSegmentDuration;
-          currentStartTime += thisSegmentDuration;
-          isFirstSplit = false;
-
-          // Select a different clip for the next split (if needed)
-          if (remainingDuration > 0.2) {
-            const nextClipSelection = this.selectClipForSegment(
-              beat,
-              videoClips,
-              segments,
-              false,
-              heroClipIndices,
-              inDrop,
-              enableSmartReorder
-            );
-            currentClipIndex = nextClipSelection.index;
-            const nextClip = videoClips[currentClipIndex];
-            currentClipStart = nextClip?.trimStart || 0;
-            console.log(`  Next split will use clip ${currentClipIndex + 1}`);
-          }
-        }
-        console.log(`✓ Split complete: created ${splitCount} sub-segments`);
-      } else {
-        // --- Build Single Segment (normal case) ---
-        const segment: EnhancedSyncSegment = {
-          startTime: beat.time,
-          endTime,
-          duration: endTime - beat.time,
-          videoIndex: clipSelection.index,
-          clipStartTime,
-          transition,
-          prevVideoIndex: segments.length > 0 ? segments[segments.length - 1].videoIndex : -1,
-          filter,
-          isHeroSegment: isHero,
-          isDropSegment: inDrop,
-          rapidFireGroup: inDrop ? this.getDropIndex(beat.time, drops) : undefined,
-          playbackSpeed,
-          syncScore
-        };
-
-        segments.push(segment);
-      }
-
+      segments.push(segment);
       currentBeatIndex += segmentBeats;
     }
 
@@ -281,12 +147,7 @@ export class SegmentationService {
 
     const averageScore = segments.length > 0 ? Math.round(totalScore / segments.length) : 0;
 
-    // Count how many clips have metadata
-    const clipsWithMetadata = videoClips.filter(c => c.metadata?.processed).length;
-    const speedRampedSegments = segments.filter(s => s.playbackSpeed !== 1.0).length;
-
     console.log(`🎬 Generated ${segments.length} segments | ${heroBeats.length} hero moments | ${drops.length} drops | Score: ${averageScore}%`);
-    console.log(`📊 Clips with AI metadata: ${clipsWithMetadata}/${videoClips.length} | Speed-ramped segments: ${speedRampedSegments}`);
 
     return {
       segments,
@@ -300,28 +161,28 @@ export class SegmentationService {
   // ============ HELPER METHODS ============
 
   private calculateBPM(beats: BeatMarker[]): number {
-    if (beats.length < BPM.MIN_SAMPLES) return BPM.DEFAULT_BPM;
+    if (beats.length < 4) return 120;
 
     const intervals: number[] = [];
-    for (let i = 1; i < Math.min(beats.length, BPM.MAX_SAMPLES); i++) {
+    for (let i = 1; i < Math.min(beats.length, 50); i++) {
       intervals.push(beats[i].time - beats[i - 1].time);
     }
 
     intervals.sort((a, b) => a - b);
     const median = intervals[Math.floor(intervals.length / 2)];
-    const filtered = intervals.filter(i => Math.abs(i - median) < median * BPM.VARIANCE_TOLERANCE);
+    const filtered = intervals.filter(i => Math.abs(i - median) < median * 0.3);
     const avgInterval = filtered.reduce((a, b) => a + b, 0) / filtered.length;
 
     let bpm = 60 / avgInterval;
-    while (bpm < BPM.MIN_BPM) bpm *= 2;
-    while (bpm > BPM.MAX_BPM) bpm /= 2;
+    while (bpm < 80) bpm *= 2;
+    while (bpm > 180) bpm /= 2;
 
     return Math.round(bpm);
   }
 
   private inferDrops(beats: BeatMarker[]): DropZone[] {
     const drops: DropZone[] = [];
-    const windowSize = BEAT_DETECTION.DROP_DETECTION_WINDOW;
+    const windowSize = 8;
 
     for (let i = windowSize; i < beats.length - windowSize; i++) {
       const beforeAvg = beats.slice(i - windowSize, i)
@@ -332,7 +193,7 @@ export class SegmentationService {
       // More lenient: detect energy jumps
       if (beforeAvg < 0.5 && afterAvg > 0.5 && beats[i].intensity > 0.6) {
         const lastDrop = drops[drops.length - 1];
-        if (!lastDrop || beats[i].time - lastDrop.peakTime > BEAT_DETECTION.MIN_DROP_GAP) {
+        if (!lastDrop || beats[i].time - lastDrop.peakTime > 8) {
           drops.push({
             startTime: beats[Math.max(0, i - 4)].time,
             peakTime: beats[i].time,
@@ -359,75 +220,6 @@ export class SegmentationService {
     return scored.slice(0, heroCount).map(s => s.index);
   }
 
-  // Select a calm clip for intro sections (prefer lower motion)
-  private selectIntroClip(clips: VideoClip[]): number {
-    if (clips.length === 0) return 0;
-    if (clips.length === 1) return 0;
-
-    // Score clips - prefer lower motion and moderate brightness for intros
-    const scored = clips.map((clip, index) => ({
-      index,
-      score: (1 - (clip.metadata?.motionEnergy || 0.5)) * 0.5 + // Prefer calm clips
-             (clip.metadata?.brightness || 0.5) * 0.3 + // Prefer visible clips
-             Math.random() * 0.2 // Small random factor for variety
-    }));
-
-    scored.sort((a, b) => b.score - a.score);
-
-    // Pick from top 3 candidates randomly
-    const topCandidates = scored.slice(0, Math.min(3, scored.length));
-    return topCandidates[Math.floor(Math.random() * topCandidates.length)].index;
-  }
-
-  // Select multiple non-repeating calm clips for intro sections
-  private selectMultipleIntroClips(clips: VideoClip[], count: number): number[] {
-    if (clips.length === 0) return [0];
-    if (clips.length === 1) return Array(count).fill(0);
-
-    // Score clips - prefer lower motion and moderate brightness for intros
-    const scored = clips.map((clip, index) => ({
-      index,
-      score: (1 - (clip.metadata?.motionEnergy || 0.5)) * 0.6 + // Prefer calm clips
-             (clip.metadata?.brightness || 0.5) * 0.3 + // Prefer visible clips
-             Math.random() * 0.1 // Small random factor for variety
-    }));
-
-    scored.sort((a, b) => b.score - a.score);
-
-    // Get top candidates (at least as many as we need, or all clips if fewer)
-    const candidateCount = Math.min(Math.max(count * 2, 6), clips.length);
-    const topCandidates = scored.slice(0, candidateCount);
-
-    // Select non-repeating clips
-    const selectedIndices: number[] = [];
-    const usedIndices = new Set<number>();
-
-    for (let i = 0; i < count; i++) {
-      // Find available candidates not yet used
-      const available = topCandidates.filter(c => !usedIndices.has(c.index));
-
-      if (available.length > 0) {
-        // Pick randomly from available
-        const pick = available[Math.floor(Math.random() * available.length)];
-        selectedIndices.push(pick.index);
-        usedIndices.add(pick.index);
-      } else {
-        // If we've used all candidates, start reusing but avoid back-to-back
-        const lastUsed = selectedIndices[selectedIndices.length - 1];
-        const nonBackToBack = topCandidates.filter(c => c.index !== lastUsed);
-        if (nonBackToBack.length > 0) {
-          const pick = nonBackToBack[Math.floor(Math.random() * nonBackToBack.length)];
-          selectedIndices.push(pick.index);
-        } else {
-          // Fallback: just pick any
-          selectedIndices.push(topCandidates[0].index);
-        }
-      }
-    }
-
-    return selectedIndices;
-  }
-
   private selectClipForSegment(
     beat: BeatMarker,
     clips: VideoClip[],
@@ -449,58 +241,35 @@ export class SegmentationService {
     const lastSegment = existingSegments[existingSegments.length - 1];
     const lastUsedIndex = lastSegment?.videoIndex ?? -1;
 
-    // Get the last 4 used indices to prevent repetition patterns
-    const recentIndices = existingSegments.slice(-4).map(s => s.videoIndex);
-
     const scored = clips.map((clip, index) => {
-      // Hard block: never use same clip as previous (unless only 1 clip available)
-      if (clips.length > 1 && index === lastUsedIndex) {
-        return { index, score: -1000 };
-      }
-
-      // Hard block: never use clip from 2 segments ago (prevents A-B-A pattern)
-      if (clips.length > 2 && recentIndices.length >= 2 && index === recentIndices[recentIndices.length - 2]) {
-        return { index, score: -1000 };
-      }
-
       let score = 100;
-
-      // Strong penalty for clip used 3-4 segments ago (prevents A-B-C-A patterns)
-      if (clips.length > 3 && recentIndices.length >= 3 && index === recentIndices[recentIndices.length - 3]) {
-        score -= 150;
-      }
-      if (clips.length > 4 && recentIndices.length >= 4 && index === recentIndices[recentIndices.length - 4]) {
-        score -= 100;
-      }
 
       // Penalize recent use
       const lastTime = lastUsedTime.get(index) || -Infinity;
       const timeSinceUse = beat.time - lastTime;
-      if (timeSinceUse < CLIP_SELECTION.RECENT_USE_WINDOW) {
-        score -= (CLIP_SELECTION.RECENT_USE_WINDOW - timeSinceUse) * CLIP_SELECTION.RECENT_USE_PENALTY_MULTIPLIER;
-      }
+      if (timeSinceUse < 5) score -= (5 - timeSinceUse) * 10;
 
       // Penalize same as previous
-      if (index === lastUsedIndex) score -= CLIP_SELECTION.SAME_CLIP_PENALTY;
+      if (index === lastUsedIndex) score -= 50;
 
       // Penalize overuse
       const uses = usageCount.get(index) || 0;
-      score -= uses * CLIP_SELECTION.OVERUSE_PENALTY;
+      score -= uses * 5;
 
       // Motion matching
       if (clip.metadata?.motionEnergy) {
         const motionMatch = 1 - Math.abs(clip.metadata.motionEnergy - beat.intensity);
-        score += motionMatch * CLIP_SELECTION.MOTION_MATCH_BONUS;
+        score += motionMatch * 25;
       }
 
       // Hero clip bonus
       if (isHero && heroClipIndices.includes(index)) {
-        score += CLIP_SELECTION.HERO_CLIP_BONUS;
+        score += 35;
       }
 
       // High motion for drops
-      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > SYNC_SCORING.DROP_MOTION_THRESHOLD) {
-        score += CLIP_SELECTION.DROP_HIGH_MOTION_BONUS;
+      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.6) {
+        score += 30;
       }
 
       // Smart reorder: prefer similar brightness for smoother flow
@@ -508,7 +277,7 @@ export class SegmentationService {
         const lastClip = clips[lastSegment.videoIndex];
         if (lastClip?.metadata?.brightness) {
           const brightnessDiff = Math.abs(clip.metadata.brightness - lastClip.metadata.brightness);
-          score += (1 - brightnessDiff) * CLIP_SELECTION.BRIGHTNESS_SIMILARITY_BONUS;
+          score += (1 - brightnessDiff) * 15;
         }
       }
 
@@ -517,27 +286,8 @@ export class SegmentationService {
 
     scored.sort((a, b) => b.score - a.score);
 
-    // CRITICAL: Filter out blocked clips (score -1000) BEFORE selecting
-    const validCandidates = scored.filter(s => s.score > -500);
-
-    // Debug: Log blocked clips
-    const blockedClips = scored.filter(s => s.score <= -500);
-    if (blockedClips.length > 0) {
-      console.log(`🚫 Blocked clips: [${blockedClips.map(c => c.index + 1).join(', ')}] | Last used: ${lastUsedIndex + 1} | Recent: [${recentIndices.map(i => i + 1).join(', ')}]`);
-    }
-
-    // If somehow all clips are blocked (shouldn't happen), fall back to highest scored
-    if (validCandidates.length === 0) {
-      console.warn('⚠️ All clips blocked! Falling back to highest scored clip.');
-      return { index: scored[0].index };
-    }
-
-    // Randomness among top VALID candidates to use more clips
-    const topCount = Math.max(
-      CLIP_SELECTION.MIN_TOP_CANDIDATES,
-      Math.ceil(validCandidates.length * CLIP_SELECTION.TOP_CANDIDATES_PERCENTAGE)
-    );
-    const topCandidates = validCandidates.slice(0, Math.min(topCount, validCandidates.length));
+    // Randomness among top 50% of candidates to use more clips
+    const topCandidates = scored.slice(0, Math.max(3, Math.ceil(clips.length * 0.5)));
     const selected = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
     return { index: selected.index };
@@ -605,32 +355,30 @@ export class SegmentationService {
     clip: VideoClip,
     beat: BeatMarker,
     segmentDuration: number,
-    isHero: boolean,
-    clipEnd?: number
+    isHero: boolean
   ): number {
-    const clipStart = clip.trimStart || 0;
-    const effectiveClipEnd = clipEnd || (clip.trimEnd && clip.trimEnd > clipStart ? clip.trimEnd : (clip.duration || 30));
-    const availableDuration = effectiveClipEnd - clipStart;
+
+    const availableDuration = clip.trimEnd - clip.trimStart;
 
     // If segment is longer than available clip, start at beginning
     if (segmentDuration >= availableDuration) {
-      return clipStart;
+      return clip.trimStart;
     }
 
     // Hero moments use peak motion timestamp
     if (isHero && clip.metadata?.peakMotionTimestamp) {
       const peakTime = clip.metadata.peakMotionTimestamp;
-      const startTime = Math.max(clipStart, peakTime - segmentDuration / 2);
-      const maxStart = effectiveClipEnd - segmentDuration;
-      return Math.max(clipStart, Math.min(startTime, maxStart));
+      const startTime = Math.max(clip.trimStart, peakTime - segmentDuration / 2);
+      const maxStart = clip.trimEnd - segmentDuration;
+      return Math.max(clip.trimStart, Math.min(startTime, maxStart));
     }
 
-    const maxStart = effectiveClipEnd - segmentDuration;
-    const range = maxStart - clipStart;
+    const maxStart = clip.trimEnd - segmentDuration;
+    const range = maxStart - clip.trimStart;
 
-    if (range <= 0) return clipStart;
+    if (range <= 0) return clip.trimStart;
 
-    return clipStart + Math.random() * range;
+    return clip.trimStart + Math.random() * range;
   }
 
   private calculateSegmentScore(
@@ -639,24 +387,22 @@ export class SegmentationService {
     inDrop: boolean,
     isHero: boolean
   ): number {
-    let score = SYNC_SCORING.BASE_SCORE;
+    let score = 50; // Base score
 
     // Motion match bonus
-    if (clip.metadata?.motionEnergy !== undefined && !isNaN(clip.metadata.motionEnergy)) {
+    if (clip.metadata?.motionEnergy) {
       const motionMatch = 1 - Math.abs(clip.metadata.motionEnergy - beat.intensity);
-      if (!isNaN(motionMatch)) {
-        score += motionMatch * SYNC_SCORING.MOTION_MATCH_MAX_BONUS;
-      }
+      score += motionMatch * 30;
     }
 
     // Drop + high motion = excellent
-    if (inDrop && clip.metadata?.motionEnergy !== undefined && !isNaN(clip.metadata.motionEnergy) && clip.metadata.motionEnergy > SYNC_SCORING.DROP_MOTION_THRESHOLD) {
-      score += SYNC_SCORING.DROP_HIGH_MOTION_BONUS;
+    if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.6) {
+      score += 15;
     }
 
     // Hero moment with hero clip = excellent
     if (isHero && clip.isHeroClip) {
-      score += SYNC_SCORING.HERO_MOMENT_BONUS;
+      score += 20;
     }
 
     return Math.min(100, Math.round(score));
