@@ -2,12 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { BeatMarker, EnhancedSyncSegment, VideoClip, TransitionType } from '../types';
 import { Play, Pause, SkipBack, Loader2, Disc } from 'lucide-react';
 
-// Binary search for finding segment at a given time - O(log n)
+// Binary search for segment lookup - O(log n)
 function findSegmentAtTime(segments: EnhancedSyncSegment[], time: number): EnhancedSyncSegment | null {
   if (segments.length === 0) return null;
-  let left = 0;
-  let right = segments.length - 1;
-
+  let left = 0, right = segments.length - 1;
   while (left <= right) {
     const mid = Math.floor((left + right) / 2);
     const seg = segments[mid];
@@ -33,33 +31,26 @@ interface PlayerProps {
   onRecordingComplete?: (blob: Blob) => void;
 }
 
-// Video pool slot tracking
 interface PoolSlot {
   clipIndex: number;
   ready: boolean;
 }
 
-const POOL_SIZE = 3; // Only 3 video elements instead of 50+
+const POOL_SIZE = 3;
 
 const Player: React.FC<PlayerProps> = ({
-  audioUrl,
-  videoClips,
-  beats,
-  duration,
-  segments,
-  bpm,
-  onTimeUpdate,
-  isPlaying,
-  onPlayToggle,
-  seekTime,
-  isRecording = false,
-  onRecordingComplete
+  audioUrl, videoClips, beats, duration, segments, bpm,
+  onTimeUpdate, isPlaying, onPlayToggle, seekTime,
+  isRecording = false, onRecordingComplete
 }) => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const requestRef = useRef<number | null>(null);
 
-  // VIDEO POOL: Only 3 video elements
+  // CANVAS-BUFFERED RENDERING: Draw video to canvas instead of showing video elements
+  const displayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const recordCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Video pool (hidden - only for decoding)
   const videoPoolRefs = useRef<(HTMLVideoElement | null)[]>([null, null, null]);
   const poolSlots = useRef<PoolSlot[]>([
     { clipIndex: -1, ready: false },
@@ -69,81 +60,87 @@ const Player: React.FC<PlayerProps> = ({
   const activeSlotRef = useRef<number>(0);
   const prevSlotRef = useRef<number>(-1);
 
-  // Recording Refs
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Recording
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // Visual FX
-  const fxState = useRef({ flash: 0, zoom: 1.0, filter: 'none', glitch: 0 });
+  // Animation
+  const requestRef = useRef<number | null>(null);
+  const playPromiseRef = useRef<Promise<void> | null>(null);
 
   const [displayClipIndex, setDisplayClipIndex] = useState<number>(0);
   const [isReady, setIsReady] = useState(false);
-  const playPromiseRef = useRef<Promise<void> | null>(null);
 
-  // Find an available pool slot (not currently active or previous)
-  const findAvailableSlot = (excludeSlots: number[]): number => {
+  // Find available pool slot
+  const findAvailableSlot = (exclude: number[]): number => {
     for (let i = 0; i < POOL_SIZE; i++) {
-      if (!excludeSlots.includes(i)) return i;
+      if (!exclude.includes(i)) return i;
     }
-    return 0; // Fallback
+    return 0;
   };
 
-  // Load a clip into a specific pool slot
-  const loadClipIntoSlot = (slotIndex: number, clipIndex: number, seekTo?: number) => {
-    const video = videoPoolRefs.current[slotIndex];
+  // Load clip into slot
+  const loadClipIntoSlot = (slot: number, clipIndex: number, seekTo?: number) => {
+    const video = videoPoolRefs.current[slot];
     const clip = videoClips[clipIndex];
     if (!video || !clip) return;
 
-    // Only reload if different clip
-    if (poolSlots.current[slotIndex].clipIndex !== clipIndex) {
+    if (poolSlots.current[slot].clipIndex !== clipIndex) {
+      poolSlots.current[slot] = { clipIndex, ready: false };
       video.src = clip.url;
-      poolSlots.current[slotIndex] = { clipIndex, ready: false };
 
       const onReady = () => {
-        poolSlots.current[slotIndex].ready = true;
+        poolSlots.current[slot].ready = true;
         if (seekTo !== undefined) video.currentTime = seekTo;
-        video.removeEventListener('loadeddata', onReady);
+        video.removeEventListener('canplaythrough', onReady);
       };
-      video.addEventListener('loadeddata', onReady);
+      video.addEventListener('canplaythrough', onReady);
       video.load();
     } else if (seekTo !== undefined) {
       video.currentTime = seekTo;
     }
   };
 
-  // Initialize first segment
+  // Initialize
   useEffect(() => {
     if (segments.length > 0 && videoClips.length > 0) {
-      const firstClipIndex = segments[0].videoIndex;
-      loadClipIntoSlot(0, firstClipIndex, segments[0].clipStartTime);
+      const firstClip = segments[0].videoIndex;
+      loadClipIntoSlot(0, firstClip, segments[0].clipStartTime);
       activeSlotRef.current = 0;
-      setDisplayClipIndex(firstClipIndex);
+      setDisplayClipIndex(firstClip);
+
+      // Setup canvas size
+      const canvas = displayCanvasRef.current;
+      if (canvas) {
+        canvas.width = 1280;
+        canvas.height = 720;
+      }
+
       setIsReady(true);
     }
   }, [segments, videoClips]);
 
-  // Cleanup on unmount
+  // Cleanup
   useEffect(() => {
     return () => {
-      videoPoolRefs.current.forEach(video => {
-        if (video) {
-          video.pause();
-          video.src = '';
-          video.load();
-        }
+      videoPoolRefs.current.forEach(v => {
+        if (v) { v.pause(); v.src = ''; }
       });
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, []);
 
-  // Recording Logic
+  // Recording logic
   useEffect(() => {
     if (isRecording) {
       chunksRef.current = [];
-      const canvas = canvasRef.current;
+      const canvas = recordCanvasRef.current;
       const audio = audioRef.current;
 
       if (canvas && audio) {
+        canvas.width = 1280;
+        canvas.height = 720;
+
         const canvasStream = canvas.captureStream(30);
         let audioStream: MediaStream | null = null;
         if ((audio as any).captureStream) audioStream = (audio as any).captureStream();
@@ -156,156 +153,131 @@ const Player: React.FC<PlayerProps> = ({
           const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp9,opus' });
           recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
           recorder.onstop = () => {
-             const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-             if (onRecordingComplete) onRecordingComplete(blob);
+            const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+            if (onRecordingComplete) onRecordingComplete(blob);
           };
           recorder.start();
           recorderRef.current = recorder;
         } catch (e) {
-          console.error("MediaRecorder failed", e);
+          console.error("Recording failed", e);
         }
       }
-    } else {
-      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-        recorderRef.current.stop();
-      }
+    } else if (recorderRef.current?.state !== 'inactive') {
+      recorderRef.current?.stop();
     }
   }, [isRecording]);
 
-  // Main Playback Loop
+  // MAIN PLAYBACK LOOP with Canvas Rendering
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
+    const displayCanvas = displayCanvasRef.current;
+    const recordCanvas = recordCanvasRef.current;
+    if (!audio || !displayCanvas) return;
 
-    const animate = () => {
-      if (!audio) return;
+    const displayCtx = displayCanvas.getContext('2d', { alpha: false });
+    const recordCtx = recordCanvas?.getContext('2d', { alpha: false });
+
+    const renderFrame = () => {
       const currentTime = audio.currentTime;
       onTimeUpdate(currentTime);
 
-      // FX Decay
-      if (fxState.current.flash > 0) fxState.current.flash *= 0.85;
-      if (fxState.current.glitch > 0) fxState.current.glitch -= 1;
-      if (fxState.current.zoom > 1.0) fxState.current.zoom = 1.0 + (fxState.current.zoom - 1.0) * 0.95;
-      if (fxState.current.zoom < 1.001) fxState.current.zoom = 1.0;
+      if (segments.length === 0) {
+        if (!audio.paused) requestRef.current = requestAnimationFrame(renderFrame);
+        return;
+      }
 
-      if (segments.length > 0) {
-        const currentSegment = findSegmentAtTime(segments, currentTime);
+      const currentSegment = findSegmentAtTime(segments, currentTime);
+      if (!currentSegment) {
+        if (!audio.paused) requestRef.current = requestAnimationFrame(renderFrame);
+        return;
+      }
 
-        if (currentSegment) {
-          const timeInSegment = currentTime - currentSegment.startTime;
-          const activeSlot = activeSlotRef.current;
-          const activeClipIndex = poolSlots.current[activeSlot].clipIndex;
-          const activeVideo = videoPoolRefs.current[activeSlot];
+      const timeInSegment = currentTime - currentSegment.startTime;
+      const activeSlot = activeSlotRef.current;
+      const activeClipIndex = poolSlots.current[activeSlot]?.clipIndex ?? -1;
+      const activeVideo = videoPoolRefs.current[activeSlot];
 
-          // --- CUT EVENT: Need different clip ---
-          if (currentSegment.videoIndex !== activeClipIndex) {
-            const newClipIndex = currentSegment.videoIndex;
+      // --- CUT DETECTION ---
+      if (currentSegment.videoIndex !== activeClipIndex && activeClipIndex !== -1) {
+        const newClipIndex = currentSegment.videoIndex;
 
-            // Find slot with this clip already loaded, or get available slot
-            let newSlot = poolSlots.current.findIndex(s => s.clipIndex === newClipIndex);
-            if (newSlot === -1) {
-              newSlot = findAvailableSlot([activeSlot, prevSlotRef.current]);
-              loadClipIntoSlot(newSlot, newClipIndex, currentSegment.clipStartTime);
-            }
+        // Find or load the new clip
+        let newSlot = poolSlots.current.findIndex(s => s.clipIndex === newClipIndex);
+        if (newSlot === -1) {
+          newSlot = findAvailableSlot([activeSlot, prevSlotRef.current]);
+          loadClipIntoSlot(newSlot, newClipIndex, currentSegment.clipStartTime);
+        }
 
-            // Hide previous
-            if (activeVideo) {
-              activeVideo.style.opacity = '0';
-              activeVideo.style.zIndex = '0';
-              activeVideo.pause();
-            }
+        // Pause old video
+        if (activeVideo) activeVideo.pause();
 
-            // Show new
-            const newVideo = videoPoolRefs.current[newSlot];
-            if (newVideo) {
-              newVideo.currentTime = currentSegment.clipStartTime;
-              newVideo.style.opacity = '1';
-              newVideo.style.zIndex = '10';
-              newVideo.playbackRate = currentSegment.playbackSpeed || 1.0;
-              if (isPlaying) newVideo.play().catch(() => {});
-            }
+        // Start new video
+        const newVideo = videoPoolRefs.current[newSlot];
+        if (newVideo) {
+          newVideo.currentTime = currentSegment.clipStartTime;
+          newVideo.playbackRate = currentSegment.playbackSpeed || 1.0;
+          if (isPlaying) newVideo.play().catch(() => {});
+        }
 
-            prevSlotRef.current = activeSlot;
-            activeSlotRef.current = newSlot;
-            setDisplayClipIndex(newClipIndex);
+        prevSlotRef.current = activeSlot;
+        activeSlotRef.current = newSlot;
+        setDisplayClipIndex(newClipIndex);
 
-          } else {
-            // --- DURING SEGMENT: Sync video ---
-            const clip = videoClips[activeClipIndex];
-            if (activeVideo && clip) {
-              const targetTime = currentSegment.clipStartTime + timeInSegment;
-              let clampedTime = Math.min(targetTime, clip.trimEnd - 0.01);
+      } else if (activeVideo) {
+        // --- SYNC ACTIVE VIDEO ---
+        const clip = videoClips[activeClipIndex];
+        if (clip) {
+          const targetTime = currentSegment.clipStartTime + timeInSegment;
+          const clampedTime = Math.min(targetTime, (clip.trimEnd || clip.duration) - 0.05);
 
-              const drift = Math.abs(activeVideo.currentTime - clampedTime);
-              if (drift > 0.15) activeVideo.currentTime = clampedTime;
+          const drift = Math.abs(activeVideo.currentTime - clampedTime);
+          if (drift > 0.1) activeVideo.currentTime = clampedTime;
 
-              const videoEnded = activeVideo.ended || activeVideo.currentTime >= activeVideo.duration - 0.1;
-              if (isPlaying && activeVideo.paused && !videoEnded) activeVideo.play().catch(() => {});
-
-              // Apply transforms
-              let scale = fxState.current.zoom;
-              let translateX = fxState.current.glitch > 0 ? (Math.random() - 0.5) * 20 : 0;
-              activeVideo.style.transform = `scale(${scale}) translate3d(${translateX}px, 0, 0)`;
-
-              // Crossfade with previous
-              if (currentSegment.transition === TransitionType.CROSSFADE && timeInSegment < 0.5) {
-                const prevVideo = videoPoolRefs.current[prevSlotRef.current];
-                if (prevVideo && prevSlotRef.current !== -1) {
-                  const opacity = timeInSegment / 0.5;
-                  activeVideo.style.opacity = opacity.toString();
-                  prevVideo.style.opacity = (1 - opacity).toString();
-                  prevVideo.style.zIndex = '5';
-                  if (prevVideo.paused && isPlaying) prevVideo.play().catch(() => {});
-                }
-              }
-            }
-
-            // --- PREDICTIVE PRELOAD: Load next clip ---
-            const segIdx = segments.findIndex(s => currentTime >= s.startTime && currentTime < s.endTime);
-            if (segIdx >= 0 && segIdx < segments.length - 1) {
-              const nextSeg = segments[segIdx + 1];
-              const timeUntilCut = nextSeg.startTime - currentTime;
-
-              if (timeUntilCut < 0.8 && timeUntilCut > 0) {
-                const nextClipIndex = nextSeg.videoIndex;
-                const alreadyLoaded = poolSlots.current.some(s => s.clipIndex === nextClipIndex);
-
-                if (!alreadyLoaded && nextClipIndex !== activeClipIndex) {
-                  const preloadSlot = findAvailableSlot([activeSlot, prevSlotRef.current]);
-                  loadClipIntoSlot(preloadSlot, nextClipIndex, nextSeg.clipStartTime);
-                }
-              }
-            }
+          if (isPlaying && activeVideo.paused && !activeVideo.ended) {
+            activeVideo.play().catch(() => {});
           }
         }
       }
 
-      // Canvas render for recording
-      const activeVideo = videoPoolRefs.current[activeSlotRef.current];
-      const canvas = canvasRef.current;
-      if (canvas && activeVideo && activeVideo.readyState >= 2) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          if (canvas.width !== 1280) { canvas.width = 1280; canvas.height = 720; }
-          ctx.drawImage(activeVideo, 0, 0, canvas.width, canvas.height);
+      // --- DRAW TO CANVAS (eliminates DOM flicker) ---
+      const videoToDraw = videoPoolRefs.current[activeSlotRef.current];
+      if (displayCtx && videoToDraw && videoToDraw.readyState >= 2) {
+        displayCtx.drawImage(videoToDraw, 0, 0, displayCanvas.width, displayCanvas.height);
+
+        // Also draw to record canvas if recording
+        if (recordCtx && recordCanvas) {
+          recordCtx.drawImage(videoToDraw, 0, 0, recordCanvas.width, recordCanvas.height);
         }
       }
 
-      // Flash overlay
-      const flashOverlay = containerRef.current?.querySelector('.flash-overlay') as HTMLElement;
-      if (flashOverlay) flashOverlay.style.opacity = fxState.current.flash.toString();
+      // --- PREDICTIVE PRELOAD (2 beats / 1.2s ahead) ---
+      const segIdx = segments.findIndex(s => currentTime >= s.startTime && currentTime < s.endTime);
+      if (segIdx >= 0 && segIdx < segments.length - 1) {
+        const nextSeg = segments[segIdx + 1];
+        const timeUntilCut = nextSeg.startTime - currentTime;
+        const preloadWindow = bpm > 0 ? (120 / bpm) : 1.2; // ~2 beats
 
-      if (!audio.paused) requestRef.current = requestAnimationFrame(animate);
+        if (timeUntilCut < preloadWindow && timeUntilCut > 0) {
+          const nextClipIdx = nextSeg.videoIndex;
+          const alreadyLoaded = poolSlots.current.some(s => s.clipIndex === nextClipIdx);
+
+          if (!alreadyLoaded && nextClipIdx !== activeClipIndex) {
+            const preloadSlot = findAvailableSlot([activeSlotRef.current, prevSlotRef.current]);
+            loadClipIntoSlot(preloadSlot, nextClipIdx, nextSeg.clipStartTime);
+          }
+        }
+      }
+
+      if (!audio.paused) {
+        requestRef.current = requestAnimationFrame(renderFrame);
+      }
     };
 
     if (isPlaying) {
       playPromiseRef.current = audio.play().catch(() => {});
       const activeVideo = videoPoolRefs.current[activeSlotRef.current];
-      if (activeVideo) {
-        activeVideo.style.opacity = '1';
-        activeVideo.play().catch(() => {});
-      }
-      requestRef.current = requestAnimationFrame(animate);
+      if (activeVideo) activeVideo.play().catch(() => {});
+      requestRef.current = requestAnimationFrame(renderFrame);
     } else {
       if (playPromiseRef.current) {
         playPromiseRef.current.then(() => audio.pause()).catch(() => audio.pause());
@@ -317,10 +289,12 @@ const Player: React.FC<PlayerProps> = ({
       videoPoolRefs.current.forEach(v => v?.pause());
     }
 
-    return () => { if (requestRef.current) cancelAnimationFrame(requestRef.current); };
-  }, [isPlaying, segments, videoClips]);
+    return () => {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    };
+  }, [isPlaying, segments, videoClips, bpm]);
 
-  // Handle External Seek
+  // Handle seek
   useEffect(() => {
     if (seekTime !== null && audioRef.current) {
       audioRef.current.currentTime = seekTime;
@@ -328,34 +302,35 @@ const Player: React.FC<PlayerProps> = ({
 
       const targetSeg = findSegmentAtTime(segments, seekTime);
       if (targetSeg) {
-        const newClipIndex = targetSeg.videoIndex;
+        const newClipIdx = targetSeg.videoIndex;
         const timeInSeg = seekTime - targetSeg.startTime;
-        const targetTime = Math.min(targetSeg.clipStartTime + timeInSeg, videoClips[newClipIndex]?.trimEnd - 0.01 || 999);
+        const clip = videoClips[newClipIdx];
+        const targetTime = Math.min(targetSeg.clipStartTime + timeInSeg, (clip?.trimEnd || 999) - 0.05);
 
-        // Hide current
+        // Pause current
         const currentVideo = videoPoolRefs.current[activeSlotRef.current];
-        if (currentVideo) {
-          currentVideo.style.opacity = '0';
-          currentVideo.pause();
-        }
+        if (currentVideo) currentVideo.pause();
 
-        // Find or load target clip
-        let targetSlot = poolSlots.current.findIndex(s => s.clipIndex === newClipIndex);
+        // Find or load target
+        let targetSlot = poolSlots.current.findIndex(s => s.clipIndex === newClipIdx);
         if (targetSlot === -1) {
           targetSlot = findAvailableSlot([]);
-          loadClipIntoSlot(targetSlot, newClipIndex, targetTime);
+          loadClipIntoSlot(targetSlot, newClipIdx, targetTime);
         }
 
         const targetVideo = videoPoolRefs.current[targetSlot];
-        if (targetVideo) {
-          targetVideo.currentTime = targetTime;
-          targetVideo.style.opacity = '1';
-          targetVideo.style.zIndex = '10';
-        }
+        if (targetVideo) targetVideo.currentTime = targetTime;
 
         activeSlotRef.current = targetSlot;
         prevSlotRef.current = -1;
-        setDisplayClipIndex(newClipIndex);
+        setDisplayClipIndex(newClipIdx);
+
+        // Immediately draw frame to canvas
+        const canvas = displayCanvasRef.current;
+        const ctx = canvas?.getContext('2d', { alpha: false });
+        if (ctx && targetVideo && targetVideo.readyState >= 2) {
+          ctx.drawImage(targetVideo, 0, 0, canvas!.width, canvas!.height);
+        }
       }
     }
   }, [seekTime, segments, videoClips]);
@@ -364,7 +339,7 @@ const Player: React.FC<PlayerProps> = ({
     return (
       <div className="flex items-center justify-center h-64 bg-black rounded-lg border border-slate-800">
         <Loader2 className="w-8 h-8 text-cyan-500 animate-spin" />
-        <span className="ml-2 text-slate-400 font-mono">Loading Media...</span>
+        <span className="ml-2 text-slate-400 font-mono">Loading...</span>
       </div>
     );
   }
@@ -373,40 +348,45 @@ const Player: React.FC<PlayerProps> = ({
     <div className="flex flex-col space-y-4" ref={containerRef}>
       <div className="relative w-full aspect-video bg-black rounded-lg overflow-hidden border border-slate-700 shadow-2xl">
         <audio ref={audioRef} src={audioUrl} onEnded={() => onPlayToggle(false)} crossOrigin="anonymous" />
-        <canvas ref={canvasRef} className="hidden" />
 
-        {/* VIDEO POOL: Only 3 elements instead of 50+ */}
-        {[0, 1, 2].map((slotIdx) => (
-          <video
-            key={`pool-${slotIdx}`}
-            ref={(el) => { videoPoolRefs.current[slotIdx] = el; }}
-            className="absolute top-0 left-0 w-full h-full object-contain"
-            style={{
-              opacity: slotIdx === 0 ? 1 : 0,
-              zIndex: slotIdx === 0 ? 10 : 0,
-              transition: 'none',
-              willChange: 'transform, opacity'
-            }}
-            muted
-            playsInline
-            preload="auto"
-            crossOrigin="anonymous"
-          />
-        ))}
+        {/* DISPLAY CANVAS - This is what users see (no DOM flicker) */}
+        <canvas
+          ref={displayCanvasRef}
+          className="absolute top-0 left-0 w-full h-full object-contain"
+          style={{ backgroundColor: '#000' }}
+        />
 
-        <div className="flash-overlay absolute inset-0 bg-white pointer-events-none z-20 opacity-0 mix-blend-overlay"></div>
+        {/* Hidden record canvas */}
+        <canvas ref={recordCanvasRef} className="hidden" />
+
+        {/* Hidden video pool - only for decoding, never shown */}
+        <div className="hidden">
+          {[0, 1, 2].map((slot) => (
+            <video
+              key={`pool-${slot}`}
+              ref={(el) => { videoPoolRefs.current[slot] = el; }}
+              muted
+              playsInline
+              preload="auto"
+              crossOrigin="anonymous"
+            />
+          ))}
+        </div>
 
         {isRecording && (
           <div className="absolute top-4 right-4 flex items-center bg-red-500/90 text-white px-3 py-1 rounded-full animate-pulse z-50">
             <Disc className="w-4 h-4 mr-2" />
-            <span className="text-xs font-bold font-mono">RECORDING...</span>
+            <span className="text-xs font-bold font-mono">REC</span>
           </div>
         )}
 
         {!isRecording && (
-          <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-sm z-30 cursor-pointer" onClick={() => onPlayToggle(!isPlaying)}>
-            <button className="p-4 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500 hover:bg-cyan-500 hover:text-black transition-all transform hover:scale-110 shadow-[0_0_20px_rgba(6,182,212,0.4)]">
-              {isPlaying ? <Pause className="w-8 h-8 fill-current" /> : <Play className="w-8 h-8 fill-current" />}
+          <div
+            className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black/40 z-30 cursor-pointer"
+            onClick={() => onPlayToggle(!isPlaying)}
+          >
+            <button className="p-4 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500 hover:bg-cyan-500 hover:text-black transition-all">
+              {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8" />}
             </button>
           </div>
         )}
@@ -416,7 +396,7 @@ const Player: React.FC<PlayerProps> = ({
         <div className="flex items-center space-x-4">
           <button
             onClick={() => {
-              if(audioRef.current) audioRef.current.currentTime = 0;
+              if (audioRef.current) audioRef.current.currentTime = 0;
               onPlayToggle(false);
               onTimeUpdate(0);
             }}
@@ -430,9 +410,9 @@ const Player: React.FC<PlayerProps> = ({
             {bpm > 0 && <span className="ml-2 text-xs text-slate-500">({bpm} BPM)</span>}
           </div>
         </div>
-        <div className="flex items-center space-x-4 text-xs font-mono text-slate-500">
+        <div className="flex items-center space-x-2 text-xs font-mono">
           <span className="bg-slate-800 px-2 py-0.5 rounded text-slate-300">CLIP {displayClipIndex + 1}</span>
-          <span className="text-green-400">3-POOL</span>
+          <span className="text-green-400">CANVAS</span>
         </div>
       </div>
     </div>

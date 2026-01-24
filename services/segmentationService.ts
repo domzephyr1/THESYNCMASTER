@@ -25,6 +25,28 @@ export class SegmentationService {
     let currentBeatIndex = 0;
     let totalScore = 0;
 
+    // --- INTRO SEGMENT: Show video before first beat ---
+    const firstBeatTime = beats[0]?.time || 0;
+    if (firstBeatTime > 0.2) {
+      // Pick lowest motion clip for calm intro
+      const introIdx = this.selectCalmClip(videoClips);
+      const introClip = videoClips[introIdx];
+      segments.push({
+        startTime: 0,
+        endTime: firstBeatTime,
+        duration: firstBeatTime,
+        videoIndex: introIdx,
+        clipStartTime: introClip.trimStart,
+        transition: TransitionType.CUT,
+        prevVideoIndex: -1,
+        filter: 'none',
+        isHeroSegment: false,
+        isDropSegment: false,
+        playbackSpeed: 1.0,
+        syncScore: 75
+      });
+    }
+
     while (currentBeatIndex < beats.length) {
       const beat = beats[currentBeatIndex];
       const nextBeat = beats[currentBeatIndex + 1];
@@ -249,6 +271,20 @@ export class SegmentationService {
       .sort((a, b) => b.s - a.s)
       .slice(0, Math.ceil(clips.length * 0.3))
       .map(x => x.i);
+  }
+
+  // Select lowest motion clip for calm intro/outro segments
+  private selectCalmClip(clips: VideoClip[]): number {
+    if (clips.length === 0) return 0;
+
+    const scored = clips.map((clip, index) => ({
+      index,
+      motion: clip.metadata?.motionEnergy || 0.5
+    }));
+
+    // Sort by lowest motion first
+    scored.sort((a, b) => a.motion - b.motion);
+    return scored[0].index;
   }
 
   private selectTransition(beat: BeatMarker, inDrop: boolean, atDropPeak: boolean, index: number, preset?: StylePreset): TransitionType {
