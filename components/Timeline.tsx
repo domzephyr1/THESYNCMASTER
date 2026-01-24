@@ -69,39 +69,18 @@ const Timeline: React.FC<TimelineProps> = ({
     if (beats.length > 0) {
       const effectiveDuration = duration > 0 ? duration : 1;
 
+      // Draw beat markers with GLOW effect for visibility
       ctx.save();
+      ctx.shadowColor = '#fbbf24';
+      ctx.shadowBlur = 8;
 
-      // First pass: Draw all beat lines
+      ctx.strokeStyle = '#fbbf24'; // Amber 400 - very bright
+      ctx.lineWidth = 2;
+
       beats.forEach((beat) => {
-        if (typeof beat.time !== 'number' || isNaN(beat.time)) return;
-
         const x = Math.round((beat.time / effectiveDuration) * width);
         if (x >= 0 && x <= width) {
-          // Determine color based on beat type
-          let lineColor = '#fbbf24'; // Default amber/yellow
-          let lineWidth = 1.5;
-          let glowColor = '#fbbf24';
-
-          if (beat.isHeroMoment) {
-            lineColor = '#f97316'; // Orange for hero moments
-            glowColor = '#f97316';
-            lineWidth = 3;
-          } else if (beat.isDrop) {
-            lineColor = '#ef4444'; // Red for drops
-            glowColor = '#ef4444';
-            lineWidth = 2.5;
-          } else if (beat.isDownbeat) {
-            lineColor = '#22c55e'; // Green for downbeats
-            glowColor = '#22c55e';
-            lineWidth = 2;
-          }
-
-          // Draw glow
-          ctx.shadowColor = glowColor;
-          ctx.shadowBlur = beat.isHeroMoment ? 12 : 6;
-          ctx.strokeStyle = lineColor;
-          ctx.lineWidth = lineWidth;
-
+          // Draw vertical line
           ctx.beginPath();
           ctx.moveTo(x, 0);
           ctx.lineTo(x, height);
@@ -109,40 +88,16 @@ const Timeline: React.FC<TimelineProps> = ({
         }
       });
 
-      // Second pass: Draw marker heads on top
+      // Draw marker heads on top (no shadow for cleaner look)
       ctx.shadowBlur = 0;
+      ctx.fillStyle = '#fbbf24'; // Amber 400
 
       beats.forEach((beat) => {
-        if (typeof beat.time !== 'number' || isNaN(beat.time)) return;
-
         const x = Math.round((beat.time / effectiveDuration) * width);
         if (x >= 0 && x <= width) {
-          // Determine color and size based on beat type
-          let fillColor = '#fbbf24'; // Default amber/yellow
-          let radius = 4;
-
-          if (beat.isHeroMoment) {
-            fillColor = '#f97316'; // Orange for hero moments
-            radius = 7;
-          } else if (beat.isDrop) {
-            fillColor = '#ef4444'; // Red for drops
-            radius = 6;
-          } else if (beat.isDownbeat) {
-            fillColor = '#22c55e'; // Green for downbeats
-            radius = 5;
-          }
-
-          ctx.fillStyle = fillColor;
           ctx.beginPath();
-          ctx.arc(x, 8, radius, 0, Math.PI * 2);
+          ctx.arc(x, 8, 5, 0, Math.PI * 2);
           ctx.fill();
-
-          // Add white border for hero moments
-          if (beat.isHeroMoment) {
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-          }
         }
       });
 
@@ -182,7 +137,7 @@ const Timeline: React.FC<TimelineProps> = ({
         return;
     }
 
-    // Alt + Click to Preview Beat (find nearest beat)
+    // Alt + Click to Preview Beat
     if (e.altKey && onBeatPreview) {
         const nearestBeat = findNearestBeat(time);
         if (nearestBeat) {
@@ -222,30 +177,10 @@ const Timeline: React.FC<TimelineProps> = ({
           <div className="absolute -top-1 -left-1.5 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-white"></div>
         </div>
       </div>
-      <div className="flex justify-between items-center px-1 text-[10px] text-slate-500 font-mono">
+      <div className="flex justify-between px-1 text-[10px] text-slate-500 font-mono">
          <span>0:00</span>
-         <div className="flex items-center gap-3">
-           <span className="flex items-center gap-1">
-             <span className="w-2 h-2 rounded-full bg-yellow-400"></span>
-             <span>Beat</span>
-           </span>
-           <span className="flex items-center gap-1">
-             <span className="w-2 h-2 rounded-full bg-green-500"></span>
-             <span>Downbeat</span>
-           </span>
-           <span className="flex items-center gap-1">
-             <span className="w-2 h-2 rounded-full bg-red-500"></span>
-             <span>Drop</span>
-           </span>
-           <span className="flex items-center gap-1">
-             <span className="w-2.5 h-2.5 rounded-full bg-orange-500 ring-1 ring-white"></span>
-             <span>Hero</span>
-           </span>
-         </div>
+         <span className="text-slate-600">SHIFT+CLICK Edit | ALT+CLICK Preview</span>
          <span>END</span>
-      </div>
-      <div className="text-center text-[9px] text-slate-600 mt-0.5">
-         SHIFT+CLICK Edit | ALT+CLICK Preview
       </div>
     </div>
   );
