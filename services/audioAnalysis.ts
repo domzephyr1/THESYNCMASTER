@@ -148,7 +148,152 @@ export class AudioAnalyzerService {
     return beats;
   }
 
-  // ... (Rest of your existing helper methods: getWaveformData, getEnergyEnvelope, detectDrops, estimateBPM, assignPhrasePositions, identifyHeroMoments, mergeBeats)
+  // Merge nearby beats from multi-band analysis
+  private mergeBeats(beats: BeatMarker[], threshold: number): BeatMarker[] {
+    if (beats.length === 0) return [];
+
+    const merged: BeatMarker[] = [];
+    let group: BeatMarker[] = [beats[0]];
+
+    for (let i = 1; i < beats.length; i++) {
+      if (beats[i].time - group[group.length - 1].time < threshold) {
+        group.push(beats[i]);
+      } else {
+        const avgTime = group.reduce((s, b) => s + b.time, 0) / group.length;
+        const maxIntensity = Math.max(...group.map(b => b.intensity));
+        merged.push({ time: avgTime, intensity: Math.min(1, maxIntensity) });
+        group = [beats[i]];
+      }
+    }
+    if (group.length > 0) {
+      const avgTime = group.reduce((s, b) => s + b.time, 0) / group.length;
+      const maxIntensity = Math.max(...group.map(b => b.intensity));
+      merged.push({ time: avgTime, intensity: Math.min(1, maxIntensity) });
+    }
+
+    return merged;
+  }
+
+  // Generate waveform data for timeline visualization
+  getWaveformData(buffer: AudioBuffer, numSamples: number): number[] {
+    const rawData = buffer.getChannelData(0);
+    const blockSize = Math.floor(rawData.length / numSamples);
+    const waveform: number[] = [];
+
+    for (let i = 0; i < numSamples; i++) {
+      let sum = 0;
+      for (let j = 0; j < blockSize; j++) {
+        sum += Math.abs(rawData[i * blockSize + j] || 0);
+      }
+      waveform.push(sum / blockSize);
+    }
+
+    const max = Math.max(...waveform) || 1;
+    return waveform.map(v => v / max);
+  }
+
+  // Get energy envelope for drop detection
+  private getEnergyEnvelope(buffer: AudioBuffer): number[] {
+    const rawData = buffer.getChannelData(0);
+    const sampleRate = buffer.sampleRate;
+    const windowSize = Math.floor(sampleRate * 0.1);
+    const envelope: number[] = [];
+
+    for (let i = 0; i < rawData.length; i += windowSize) {
+      let sum = 0;
+      for (let j = 0; j < windowSize && i + j < rawData.length; j++) {
+        sum += rawData[i + j] * rawData[i + j];
+      }
+      envelope.push(Math.sqrt(sum / windowSize));
+    }
+
+    return envelope;
+  }
+
+  // Detect energy drops (buildups -> drops)
+  private detectDrops(envelope: number[], duration: number): DropZone[] {
+    const drops: DropZone[] = [];
+    const windowSize = 10;
+    const timePerSample = duration / envelope.length;
+
+    for (let i = windowSize; i < envelope.length - windowSize; i++) {
+      const before = envelope.slice(i - windowSize, i).reduce((a, b) => a + b, 0) / windowSize;
+      const after = envelope.slice(i, i + windowSize).reduce((a, b) => a + b, 0) / windowSize;
+
+      if (before < 0.3 && after > 0.5 && envelope[i] > 0.4) {
+        const lastDrop = drops[drops.length - 1];
+        const peakTime = i * timePerSample;
+
+        if (!lastDrop || peakTime - lastDrop.peakTime > 8) {
+          drops.push({
+            startTime: Math.max(0, (i - 4) * timePerSample),
+            peakTime,
+            endTime: Math.min(duration, (i + windowSize) * timePerSample),
+            intensity: envelope[i]
+          });
+        }
+      }
+    }
+
+    return drops;
+  }
+
+  // Estimate BPM from beat markers
+  private estimateBPM(beats: BeatMarker[]): number {
+    if (beats.length < 4) return 120;
+
+    const intervals: number[] = [];
+    for (let i = 1; i < Math.min(beats.length, 50); i++) {
+      intervals.push(beats[i].time - beats[i - 1].time);
+    }
+
+    intervals.sort((a, b) => a - b);
+    const median = intervals[Math.floor(intervals.length / 2)];
+    const filtered = intervals.filter(i => Math.abs(i - median) < median * 0.3);
+
+    if (filtered.length === 0) return 120;
+
+    const avgInterval = filtered.reduce((a, b) => a + b, 0) / filtered.length;
+    let bpm = 60 / avgInterval;
+
+    while (bpm < 80) bpm *= 2;
+    while (bpm > 180) bpm /= 2;
+
+    return Math.round(bpm);
+  }
+
+  // Assign musical phrase positions to beats
+  private assignPhrasePositions(beats: BeatMarker[], barDuration: number, drops: DropZone[]): BeatMarker[] {
+    const beatDuration = barDuration / 4;
+
+    return beats.map(beat => {
+      const barPosition = Math.round((beat.time % barDuration) / beatDuration) + 1;
+      const isDownbeat = barPosition === 1;
+      const phrasePosition = (Math.floor(beat.time / barDuration) % 8) + 1;
+      const inDrop = drops.some(d => beat.time >= d.startTime && beat.time <= d.endTime);
+
+      return {
+        ...beat,
+        isDownbeat,
+        barPosition: Math.min(4, Math.max(1, barPosition)),
+        phrasePosition,
+        isDrop: inDrop
+      };
+    });
+  }
+
+  // Identify hero moments (high energy peaks)
+  private identifyHeroMoments(beats: BeatMarker[], drops: DropZone[]): BeatMarker[] {
+    return beats.map(beat => {
+      const atDropPeak = drops.some(d => Math.abs(beat.time - d.peakTime) < 0.5);
+      const isHighEnergy = beat.intensity > 0.8;
+
+      return {
+        ...beat,
+        isHeroMoment: atDropPeak || (isHighEnergy && beat.isDownbeat)
+      };
+    });
+  }
 }
 
 export const audioService = new AudioAnalyzerService();

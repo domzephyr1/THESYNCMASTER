@@ -50,7 +50,7 @@ const VideoTrimmer: React.FC<VideoTrimmerProps> = ({ clip, onSave, onClose }) =>
         if (videoRef.current.currentTime >= end) {
           videoRef.current.currentTime = start;
         }
-        videoRef.current.play();
+        videoRef.current.play().catch(() => {});
       }
       setIsPlaying(!isPlaying);
     }
