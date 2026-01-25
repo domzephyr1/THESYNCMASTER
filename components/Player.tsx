@@ -300,8 +300,9 @@ const Player: React.FC<PlayerProps> = ({
           const targetTime = currentSegment.clipStartTime + timeInSegment;
           const clampedTime = Math.min(targetTime, (clip.trimEnd || clip.duration) - 0.05);
 
+          // Only correct drift if > 0.3s to reduce seek stutter
           const drift = Math.abs(activeVideo.currentTime - clampedTime);
-          if (drift > 0.1) activeVideo.currentTime = clampedTime;
+          if (drift > 0.3) activeVideo.currentTime = clampedTime;
 
           // Resume if paused
           if (isPlaying && activeVideo.paused && !activeVideo.ended) {
@@ -326,7 +327,8 @@ const Player: React.FC<PlayerProps> = ({
       if (segIdx >= 0 && segIdx < segments.length - 1) {
         const nextSeg = segments[segIdx + 1];
         const timeUntilCut = nextSeg.startTime - currentTime;
-        const preloadWindow = bpm > 0 ? (120 / bpm) : 1.2; // ~2 beats
+        // Preload 3-4 seconds ahead to ensure clips are ready
+        const preloadWindow = bpm > 0 ? Math.max(3, (240 / bpm)) : 3;
 
         if (timeUntilCut < preloadWindow && timeUntilCut > 0) {
           const nextClipIdx = nextSeg.videoIndex;
