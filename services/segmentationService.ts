@@ -204,7 +204,7 @@ export class SegmentationService {
     };
   }
 
-  // PIVOT: Weighted Selection Engine - Uses ALL clips in rotation
+  // PIVOT: Balanced Selection - Variety + High Sync Score
   private selectClipForSegment(
     beat: BeatMarker,
     clips: VideoClip[],
@@ -214,36 +214,35 @@ export class SegmentationService {
     inDrop: boolean,
     enableSmartReorder: boolean
   ): { index: number } {
-    // Track ALL used clips in current cycle
-    const usedInCycle = new Set(existingSegments.slice(-clips.length).map(s => s.videoIndex));
     const lastUsedIndex = existingSegments[existingSegments.length - 1]?.videoIndex ?? -1;
 
-    // Find unused clips first (ensures ALL clips get used before repeating)
-    const unusedClips = clips
-      .map((clip, index) => ({ clip, index }))
-      .filter(({ index }) => !usedInCycle.has(index) && index !== lastUsedIndex);
+    // Track recently used (last N clips where N = 1/3 of total)
+    const recentWindow = Math.max(3, Math.floor(clips.length / 3));
+    const recentlyUsed = new Set(existingSegments.slice(-recentWindow).map(s => s.videoIndex));
 
-    // If all clips used, reset cycle (allow all except last used)
-    const candidates = unusedClips.length > 0
-      ? unusedClips
-      : clips.map((clip, index) => ({ clip, index })).filter(({ index }) => index !== lastUsedIndex);
+    // Score ALL clips, but penalize recent ones
+    const scored = clips.map((clip, index) => {
+      let score = 50;
 
-    // Score only the candidates
-    const scored = candidates.map(({ clip, index }) => {
-      let score = 50; // Neutral base
-
-      // Motion-to-Beat matching
+      // MOTION MATCHING - Primary factor for sync score (restored full weight)
       if (clip.metadata?.motionEnergy) {
         const delta = Math.abs(clip.metadata.motionEnergy - beat.intensity);
-        score += (1 - delta) * 40; // Reduced weight so variety wins
+        score += (1 - delta) * 60; // Full 60 weight for motion
+      }
+
+      // VARIETY PENALTY - Penalize recently used, but don't block
+      if (index === lastUsedIndex) {
+        score -= 80; // Heavy penalty for immediate repeat
+      } else if (recentlyUsed.has(index)) {
+        score -= 30; // Moderate penalty for recent use
       }
 
       // Hero/Drop bonuses
-      if (isHero && heroClipIndices.includes(index)) score += 30;
-      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.5) score += 20;
+      if (isHero && heroClipIndices.includes(index)) score += 35;
+      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.6) score += 25;
 
       // Brightness continuity
-      if (enableSmartReorder && lastUsedIndex >= 0) {
+      if (enableSmartReorder && lastUsedIndex >= 0 && lastUsedIndex < clips.length) {
         const lastClip = clips[lastUsedIndex];
         if (lastClip?.metadata?.brightness && clip.metadata?.brightness) {
           const bDiff = Math.abs(clip.metadata.brightness - lastClip.metadata.brightness);
