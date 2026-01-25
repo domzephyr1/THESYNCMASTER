@@ -13,6 +13,7 @@ import Timeline from './components/Timeline';
 import Player from './components/Player';
 import ClipManager from './components/ClipManager';
 import VideoTrimmer from './components/VideoTrimmer';
+import SegmentTrack from './components/SegmentTrack';
 import { Zap, Download, Activity, Music as MusicIcon, Film, Key, ChevronLeft, Disc, Sliders, RefreshCw, Cpu, Layers, Gauge, Sparkles, Scissors } from 'lucide-react';
 
 // Helpers
@@ -169,6 +170,13 @@ function App() {
      setVideoFiles(prev => prev.map(c =>
        c.id === id ? { ...c, trimStart: start, trimEnd: end } : c
      ));
+  };
+
+  // Handle segment updates from SegmentTrack editor
+  const handleSegmentUpdate = (index: number, updates: Partial<EnhancedSyncSegment>) => {
+    setSegments(prev => prev.map((seg, i) =>
+      i === index ? { ...seg, ...updates } : seg
+    ));
   };
 
   const detectScenesForClip = async (clipId: string, clipUrl: string) => {
@@ -584,6 +592,18 @@ function App() {
                       Engine: High-Precision Motion
                   </span>
                </div>
+            </div>
+
+            {/* Segment Editor Track - Swap clips, change duration, transitions */}
+            <div className={`transition-opacity ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+              <SegmentTrack
+                segments={segments}
+                videoClips={videoFiles}
+                duration={duration}
+                currentTime={currentTime}
+                onSegmentUpdate={handleSegmentUpdate}
+                onSeek={handleSeek}
+              />
             </div>
 
             <div className={`p-4 bg-slate-900/50 border border-slate-800 rounded-lg transition-opacity ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
