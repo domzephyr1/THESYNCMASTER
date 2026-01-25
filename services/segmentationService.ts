@@ -204,7 +204,7 @@ export class SegmentationService {
     };
   }
 
-  // PIVOT: Balanced Selection - Variety + High Sync Score
+  // PIVOT: Forced Variety - Use ALL clips before repeating
   private selectClipForSegment(
     beat: BeatMarker,
     clips: VideoClip[],
@@ -216,30 +216,33 @@ export class SegmentationService {
   ): { index: number } {
     const lastUsedIndex = existingSegments[existingSegments.length - 1]?.videoIndex ?? -1;
 
-    // Track recently used (last N clips where N = 1/3 of total)
-    const recentWindow = Math.max(3, Math.floor(clips.length / 3));
-    const recentlyUsed = new Set(existingSegments.slice(-recentWindow).map(s => s.videoIndex));
+    // Track ALL clips used so far in current cycle
+    const usedClips = new Set(existingSegments.map(s => s.videoIndex));
 
-    // Score ALL clips, but penalize recent ones
-    const scored = clips.map((clip, index) => {
+    // Find clips NOT yet used in this cycle
+    const unusedIndices = clips
+      .map((_, i) => i)
+      .filter(i => !usedClips.has(i) && i !== lastUsedIndex);
+
+    // If all clips used, reset and use all except last
+    const candidateIndices = unusedIndices.length > 0
+      ? unusedIndices
+      : clips.map((_, i) => i).filter(i => i !== lastUsedIndex);
+
+    // Score only candidate clips
+    const scored = candidateIndices.map(index => {
+      const clip = clips[index];
       let score = 50;
 
-      // MOTION MATCHING - Primary factor for sync score (restored full weight)
+      // Motion matching for sync quality
       if (clip.metadata?.motionEnergy) {
         const delta = Math.abs(clip.metadata.motionEnergy - beat.intensity);
-        score += (1 - delta) * 60; // Full 60 weight for motion
-      }
-
-      // VARIETY PENALTY - Penalize recently used, but don't block
-      if (index === lastUsedIndex) {
-        score -= 80; // Heavy penalty for immediate repeat
-      } else if (recentlyUsed.has(index)) {
-        score -= 30; // Moderate penalty for recent use
+        score += (1 - delta) * 50;
       }
 
       // Hero/Drop bonuses
-      if (isHero && heroClipIndices.includes(index)) score += 35;
-      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.6) score += 25;
+      if (isHero && heroClipIndices.includes(index)) score += 30;
+      if (inDrop && clip.metadata?.motionEnergy && clip.metadata.motionEnergy > 0.6) score += 20;
 
       // Brightness continuity
       if (enableSmartReorder && lastUsedIndex >= 0 && lastUsedIndex < clips.length) {
