@@ -189,7 +189,8 @@ export class SegmentationService {
         }
       }
 
-      currentBeatIndex += segmentBeats;
+      // Advance to actual target beat (not original segmentBeats which may have been extended)
+      currentBeatIndex = targetEndIndex;
     }
 
     // PIVOT: Final Score Normalization (Breaks the 77% Ceiling)
@@ -204,7 +205,7 @@ export class SegmentationService {
     };
   }
 
-  // PIVOT: Forced Variety - Use ALL clips before repeating
+  // PIVOT: Forced Variety - Even distribution across ALL clips
   private selectClipForSegment(
     beat: BeatMarker,
     clips: VideoClip[],
@@ -216,17 +217,24 @@ export class SegmentationService {
   ): { index: number } {
     const lastUsedIndex = existingSegments[existingSegments.length - 1]?.videoIndex ?? -1;
 
-    // Track ALL clips used so far in current cycle
-    const usedClips = new Set(existingSegments.map(s => s.videoIndex));
+    // Count how many times each clip has been used overall
+    const usageCounts = new Map<number, number>();
+    clips.forEach((_, i) => usageCounts.set(i, 0));
+    existingSegments.forEach(s => {
+      usageCounts.set(s.videoIndex, (usageCounts.get(s.videoIndex) || 0) + 1);
+    });
 
-    // Find clips NOT yet used in this cycle
-    const unusedIndices = clips
+    // Find the minimum usage count
+    const minUsage = Math.min(...usageCounts.values());
+
+    // Prioritize clips with minimum usage (least used clips first)
+    const leastUsedIndices = clips
       .map((_, i) => i)
-      .filter(i => !usedClips.has(i) && i !== lastUsedIndex);
+      .filter(i => usageCounts.get(i) === minUsage && i !== lastUsedIndex);
 
-    // If all clips used, reset and use all except last
-    const candidateIndices = unusedIndices.length > 0
-      ? unusedIndices
+    // If all least-used clips are the last used, allow clips with +1 usage
+    const candidateIndices = leastUsedIndices.length > 0
+      ? leastUsedIndices
       : clips.map((_, i) => i).filter(i => i !== lastUsedIndex);
 
     // Score only candidate clips
@@ -237,7 +245,7 @@ export class SegmentationService {
       // Motion matching for sync quality
       if (clip.metadata?.motionEnergy) {
         const delta = Math.abs(clip.metadata.motionEnergy - beat.intensity);
-        score += (1 - delta) * 50;
+        score += (1 - delta) * 30; // Reduced from 50 to allow variety to matter more
       }
 
       // Hero/Drop bonuses
@@ -329,10 +337,10 @@ export class SegmentationService {
   }
 
   private calculateSegmentScore(beat: BeatMarker, clip: VideoClip, inDrop: boolean, isHero: boolean): number {
-    let score = 60; 
+    let score = 50;
     if (clip.metadata?.motionEnergy) {
       const match = 1 - Math.abs(clip.metadata.motionEnergy - beat.intensity);
-      score += (match * 40);
+      score += (match * 50); // Aligned with selectClipForSegment weighting
     }
     return Math.min(100, Math.round(score));
   }
