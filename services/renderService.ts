@@ -202,15 +202,28 @@ export class RenderService {
           continue;
         }
 
+        // Get clip bounds and validate/clamp seek position
+        const clip = videoClips[clipId];
+        const clipDuration = clip.duration || (clip.trimEnd - clip.trimStart) || 10;
+
+        // Clamp clipStartTime to valid range
+        let safeStartTime = Math.max(0, Math.min(seg.clipStartTime, clipDuration - 0.1));
+        let safeDuration = Math.min(seg.duration, clipDuration - safeStartTime);
+
+        if (safeDuration <= 0) {
+          safeStartTime = 0;
+          safeDuration = Math.min(seg.duration, clipDuration);
+        }
+
         const segFile = `seg_${globalIdx}.mp4`;
 
-        console.log(`   🎞️ Segment ${globalIdx + 1}/${segments.length}: clip=${clipId + 1}, start=${seg.clipStartTime.toFixed(2)}s, dur=${seg.duration.toFixed(2)}s`);
+        console.log(`   🎞️ Segment ${globalIdx + 1}/${segments.length}: clip=${clipId + 1}, start=${safeStartTime.toFixed(2)}s, dur=${safeDuration.toFixed(2)}s`);
 
         try {
           await ffmpeg.exec([
-            '-ss', seg.clipStartTime.toFixed(3),
+            '-ss', safeStartTime.toFixed(3),
             '-i', `v${clipId}.mp4`,
-            '-t', seg.duration.toFixed(3),
+            '-t', safeDuration.toFixed(3),
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-crf', '28',
