@@ -25,12 +25,17 @@ export class SegmentationService {
     let currentBeatIndex = 0;
     let totalScore = 0;
 
+    // Track clip usage counts incrementally (O(1) updates vs O(n²) recalculation)
+    const clipUsageCounts = new Map<number, number>();
+    videoClips.forEach((_, i) => clipUsageCounts.set(i, 0));
+
     // --- INTRO SEGMENT: Show video before first beat ---
     const firstBeatTime = beats[0]?.time || 0;
     if (firstBeatTime > 0.05) {
       // Pick lowest motion clip for calm intro
       const introIdx = this.selectCalmClip(videoClips);
       const introClip = videoClips[introIdx];
+      clipUsageCounts.set(introIdx, 1);
       segments.push({
         startTime: 0,
         endTime: firstBeatTime,
@@ -87,7 +92,8 @@ export class SegmentationService {
         isHero,
         heroClipIndices,
         inDrop,
-        enableSmartReorder
+        enableSmartReorder,
+        clipUsageCounts
       );
 
       const clip = videoClips[clipSelection.index];
@@ -126,6 +132,8 @@ export class SegmentationService {
           playbackSpeed,
           syncScore
         });
+        // Update usage count
+        clipUsageCounts.set(clipSelection.index, (clipUsageCounts.get(clipSelection.index) || 0) + 1);
       } else {
         // SPLIT: Segment longer than clip - use multiple clips
         let remaining = segmentDuration;
@@ -182,6 +190,8 @@ export class SegmentationService {
             playbackSpeed,
             syncScore: isFirst ? syncScore : Math.round(syncScore * 0.9)
           });
+          // Update usage count
+          clipUsageCounts.set(pickIndex, (clipUsageCounts.get(pickIndex) || 0) + 1);
 
           remaining -= subDuration;
           segStart = subEnd;
@@ -189,8 +199,8 @@ export class SegmentationService {
         }
       }
 
-      // Advance to actual target beat (not original segmentBeats which may have been extended)
-      currentBeatIndex = targetEndIndex;
+      // Advance to next beat - must always move forward by at least 1 to prevent infinite loop
+      currentBeatIndex = Math.max(currentBeatIndex + 1, targetEndIndex);
     }
 
     // PIVOT: Final Score Normalization (Breaks the 77% Ceiling)
@@ -213,19 +223,13 @@ export class SegmentationService {
     isHero: boolean,
     heroClipIndices: number[],
     inDrop: boolean,
-    enableSmartReorder: boolean
+    enableSmartReorder: boolean,
+    usageCounts: Map<number, number>
   ): { index: number } {
     const lastUsedIndex = existingSegments[existingSegments.length - 1]?.videoIndex ?? -1;
 
-    // Count how many times each clip has been used overall
-    const usageCounts = new Map<number, number>();
-    clips.forEach((_, i) => usageCounts.set(i, 0));
-    existingSegments.forEach(s => {
-      usageCounts.set(s.videoIndex, (usageCounts.get(s.videoIndex) || 0) + 1);
-    });
-
-    // Find the minimum usage count
-    const minUsage = Math.min(...usageCounts.values());
+    // Find the minimum usage count (O(n) where n = clip count, not segment count)
+    const minUsage = clips.length > 0 ? Math.min(...usageCounts.values()) : 0;
 
     // Prioritize clips with minimum usage (least used clips first)
     const leastUsedIndices = clips
