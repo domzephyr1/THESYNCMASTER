@@ -134,17 +134,27 @@ export class RenderService {
         inputMap.set(clipIdx, inputCounter++);
       }
 
-      // Create trim filters for each segment
+      // Create trim filters for each segment (with validation)
+      const validSegments: number[] = [];
       chunkSegments.forEach((seg, idx) => {
         const inputIdx = inputMap.get(seg.videoIndex);
         if (inputIdx === undefined) return;
-        
-        filterComplex += `[${inputIdx}:v]trim=start=${seg.clipStartTime}:duration=${seg.duration},setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${idx}];`;
+
+        // Ensure minimum duration and round values for FFmpeg compatibility
+        const duration = Math.max(0.1, Math.round(seg.duration * 1000) / 1000);
+        const startTime = Math.max(0, Math.round(seg.clipStartTime * 1000) / 1000);
+
+        filterComplex += `[${inputIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${idx}];`;
+        validSegments.push(idx);
       });
 
-      // Concat all segments in this chunk
-      filterComplex += chunkSegments.map((_, i) => `[v${i}]`).join('');
-      filterComplex += `concat=n=${chunkSegments.length}:v=1:a=0[outv]`;
+      // Only concat valid segments
+      if (validSegments.length === 0) {
+        console.warn(`   ⚠️ Chunk ${chunkIdx + 1} has no valid segments, skipping`);
+        continue;
+      }
+      filterComplex += validSegments.map(i => `[v${i}]`).join('');
+      filterComplex += `concat=n=${validSegments.length}:v=1:a=0[outv]`;
 
       const chunkOutput = `chunk_${chunkIdx}.mp4`;
       
@@ -159,8 +169,15 @@ export class RenderService {
         chunkOutput
       ];
 
-      await ffmpeg.exec(cmd);
-      chunkOutputs.push(chunkOutput);
+      console.log(`   🎬 Running FFmpeg for chunk ${chunkIdx + 1}...`);
+      try {
+        await ffmpeg.exec(cmd);
+        chunkOutputs.push(chunkOutput);
+      } catch (err) {
+        console.error(`   ❌ FFmpeg exec failed for chunk ${chunkIdx + 1}:`, err);
+        console.error(`   Filter: ${filterComplex.substring(0, 200)}...`);
+        throw new Error(`FFmpeg failed on chunk ${chunkIdx + 1}: ${err}`);
+      }
 
       // Clean up input clips to free memory
       await this.cleanup(loadedFiles);

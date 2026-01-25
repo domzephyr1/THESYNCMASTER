@@ -56,7 +56,8 @@ export class SegmentationService {
       const atDropPeak = drops.some(d => Math.abs(beat.time - d.peakTime) < beatDuration);
       const isHero = beat.isHeroMoment || atDropPeak;
 
-      // PIVOT: Energy-Locked Cutting Logic
+      // PIVOT: Energy-Locked Cutting Logic with minimum duration to prevent lag
+      const MIN_SEGMENT_DURATION = 0.25; // 250ms minimum to prevent decoder overload
       let segmentBeats = 1;
       if (inDrop) {
         segmentBeats = 1; // Force 1-beat cuts during drops for maximum impact
@@ -70,7 +71,12 @@ export class SegmentationService {
         segmentBeats = Math.max(preset.minSegmentBeats, Math.min(preset.maxSegmentBeats, segmentBeats));
       }
 
-      const targetEndIndex = Math.min(currentBeatIndex + segmentBeats, beats.length - 1);
+      // Find target end, ensuring minimum segment duration
+      let targetEndIndex = Math.min(currentBeatIndex + segmentBeats, beats.length - 1);
+      while (targetEndIndex < beats.length - 1 &&
+             beats[targetEndIndex].time - beat.time < MIN_SEGMENT_DURATION) {
+        targetEndIndex++;
+      }
       if (beats[targetEndIndex]) endTime = beats[targetEndIndex].time;
 
       // Select Clip with "Stellar" Precision Weighting
