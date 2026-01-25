@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: Shuffle button now randomizes clips, add outro segment\n\n- Add shuffleAssignments\\(\\) method that randomizes clip order\n- Ensures even distribution and avoids consecutive repeats\n- Add outro segment for time after last beat until song end\n- Uses calm clip for outro similar to intro\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)"
+    ]
+  }
+}

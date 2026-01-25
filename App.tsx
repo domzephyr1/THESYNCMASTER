@@ -241,15 +241,9 @@ function App() {
   }, [beats, videoFiles, duration, enableSpeedRamping, enableSmartReorder, currentPreset, phraseData]);
 
   const handleShuffle = () => {
-     if (beats.length > 0 && videoFiles.length > 0 && duration > 0) {
-        const result = segmentationService.generateMontage(beats, videoFiles, duration, {
-          enableSpeedRamping,
-          enableSmartReorder,
-          preset: STYLE_PRESETS[currentPreset],
-          phraseData: phraseData || undefined
-        });
-        setSegments(result.segments);
-        setSyncScore(Math.min(100, Math.round(result.averageScore * 1.15)));
+    if (segments.length > 0 && videoFiles.length > 0) {
+      const shuffled = segmentationService.shuffleAssignments(segments, videoFiles);
+      setSegments(shuffled);
     }
   };
 

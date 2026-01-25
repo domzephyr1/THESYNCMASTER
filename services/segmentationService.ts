@@ -203,6 +203,28 @@ export class SegmentationService {
       currentBeatIndex = Math.max(currentBeatIndex + 1, targetEndIndex);
     }
 
+    // --- OUTRO SEGMENT: Fill time after last beat until song end ---
+    const lastSegment = segments[segments.length - 1];
+    if (lastSegment && lastSegment.endTime < duration - 0.05) {
+      const outroIdx = this.selectCalmClip(videoClips);
+      const outroClip = videoClips[outroIdx];
+      const outroDuration = duration - lastSegment.endTime;
+      segments.push({
+        startTime: lastSegment.endTime,
+        endTime: duration,
+        duration: outroDuration,
+        videoIndex: outroIdx,
+        clipStartTime: outroClip.trimStart,
+        transition: TransitionType.CUT,
+        prevVideoIndex: lastSegment.videoIndex,
+        filter: 'none',
+        isHeroSegment: false,
+        isDropSegment: false,
+        playbackSpeed: 1.0,
+        syncScore: 75
+      });
+    }
+
     // PIVOT: Final Score Normalization (Breaks the 77% Ceiling)
     const averageScore = segments.length > 0 ? Math.min(100, Math.round((totalScore / segments.length) * 1.2)) : 0;
 
@@ -347,6 +369,73 @@ export class SegmentationService {
       score += (match * 50); // Aligned with selectClipForSegment weighting
     }
     return Math.min(100, Math.round(score));
+  }
+
+  // Shuffle clip assignments while keeping segment timing
+  shuffleAssignments(
+    segments: EnhancedSyncSegment[],
+    videoClips: VideoClip[]
+  ): EnhancedSyncSegment[] {
+    if (!segments.length || !videoClips.length) return segments;
+
+    // Create shuffled clip indices with even distribution
+    const shuffledIndices: number[] = [];
+    const clipCount = videoClips.length;
+
+    // Build pool ensuring each clip appears roughly equal times
+    const neededCount = segments.length;
+    const timesEach = Math.ceil(neededCount / clipCount);
+    const pool: number[] = [];
+    for (let t = 0; t < timesEach; t++) {
+      for (let i = 0; i < clipCount; i++) {
+        pool.push(i);
+      }
+    }
+
+    // Fisher-Yates shuffle
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+
+    // Assign shuffled indices, avoiding consecutive repeats
+    let lastIdx = -1;
+    for (let i = 0; i < neededCount; i++) {
+      // Find next index that isn't same as last
+      let pickIdx = pool[i % pool.length];
+      if (pickIdx === lastIdx && clipCount > 1) {
+        // Swap with next available different index
+        for (let j = i + 1; j < pool.length; j++) {
+          if (pool[j] !== lastIdx) {
+            [pool[i], pool[j]] = [pool[j], pool[i]];
+            pickIdx = pool[i];
+            break;
+          }
+        }
+      }
+      shuffledIndices.push(pickIdx);
+      lastIdx = pickIdx;
+    }
+
+    // Apply shuffled assignments to segments
+    return segments.map((seg, i) => {
+      const newClipIdx = shuffledIndices[i];
+      const clip = videoClips[newClipIdx];
+      const clipAvailable = clip.trimEnd - clip.trimStart;
+
+      // Recalculate clip start time for new clip
+      let newClipStart = clip.trimStart;
+      if (seg.duration < clipAvailable) {
+        newClipStart = clip.trimStart + (Math.random() * (clipAvailable - seg.duration));
+      }
+
+      return {
+        ...seg,
+        videoIndex: newClipIdx,
+        clipStartTime: newClipStart,
+        prevVideoIndex: i > 0 ? shuffledIndices[i - 1] : -1
+      };
+    });
   }
 }
 
