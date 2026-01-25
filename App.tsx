@@ -399,6 +399,13 @@ function App() {
 
   const handleFFmpegExport = async () => {
     if(!audioFile) return;
+
+    // Check SharedArrayBuffer support first
+    if (typeof SharedArrayBuffer === 'undefined') {
+      alert("Export requires SharedArrayBuffer. Please restart the dev server and do a hard refresh (Ctrl+Shift+R).");
+      return;
+    }
+
     setIsRendering(true);
     setRenderProgress(0);
     setShowExportModal(false);
@@ -415,9 +422,10 @@ function App() {
         a.click();
         setIsRendering(false);
         alert("Pro Render Complete!");
-    } catch (e) {
-        console.error(e);
-        alert("Render failed. Most likely cause: SharedArrayBuffer headers missing.");
+    } catch (e: any) {
+        console.error('Export error:', e);
+        const msg = e?.message || String(e);
+        alert(`Render failed: ${msg}`);
         setIsRendering(false);
     }
   };
