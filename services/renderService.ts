@@ -126,7 +126,7 @@ export class RenderService {
     const audioData = await fetchFile(audioFile);
     console.log(`   Audio data: ${(audioData.length / 1024 / 1024).toFixed(2)} MB`);
 
-    const BATCH_SIZE = 8;
+    const BATCH_SIZE = 4; // Reduced to prevent memory issues
     const segmentBlobs: Blob[] = [];
     const loadedClipIds = new Set<number>();
 
@@ -202,22 +202,28 @@ export class RenderService {
           continue;
         }
 
-        // Get clip bounds and validate/clamp seek position
+        // Get clip bounds and validate/clamp seek position with extra safety margin
         const clip = videoClips[clipId];
         const clipDuration = clip.duration || (clip.trimEnd - clip.trimStart) || 10;
 
-        // Clamp clipStartTime to valid range
-        let safeStartTime = Math.max(0, Math.min(seg.clipStartTime, clipDuration - 0.1));
-        let safeDuration = Math.min(seg.duration, clipDuration - safeStartTime);
+        // Use conservative bounds - start from 0.1s to avoid header issues, end 0.5s early
+        const safeClipStart = 0.1;
+        const safeClipEnd = Math.max(1, clipDuration - 0.5);
+        const safeClipDuration = safeClipEnd - safeClipStart;
 
-        if (safeDuration <= 0) {
-          safeStartTime = 0;
-          safeDuration = Math.min(seg.duration, clipDuration);
+        // Clamp clipStartTime within safe bounds
+        let safeStartTime = Math.max(safeClipStart, Math.min(seg.clipStartTime, safeClipEnd - 0.5));
+        let safeDuration = Math.min(seg.duration, safeClipEnd - safeStartTime);
+
+        // Fallback if still invalid
+        if (safeDuration <= 0.1 || !isFinite(safeDuration)) {
+          safeStartTime = safeClipStart;
+          safeDuration = Math.min(seg.duration, safeClipDuration, 2); // Max 2s fallback
         }
 
         const segFile = `seg_${globalIdx}.mp4`;
 
-        console.log(`   🎞️ Segment ${globalIdx + 1}/${segments.length}: clip=${clipId + 1}, start=${safeStartTime.toFixed(2)}s, dur=${safeDuration.toFixed(2)}s`);
+        console.log(`   🎞️ Segment ${globalIdx + 1}/${segments.length}: clip=${clipId + 1}, start=${safeStartTime.toFixed(2)}s, dur=${safeDuration.toFixed(2)}s (clipDur=${clipDuration.toFixed(1)}s)`);
 
         try {
           await ffmpeg.exec([
@@ -226,8 +232,8 @@ export class RenderService {
             '-t', safeDuration.toFixed(3),
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
-            '-crf', '28',
-            '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30',
+            '-crf', '30',
+            '-vf', 'scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,fps=24',
             '-an',
             '-y',
             segFile
